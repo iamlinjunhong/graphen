@@ -205,9 +205,22 @@ export function ChatView() {
         model: selectedModel
       });
 
-      await loadSessions();
+      // Reload current session messages from server to ensure consistency,
+      // then refresh sidebar session list
+      try {
+        await loadSessionDetail(currentSessionId);
+      } catch {
+        // best-effort
+      }
+      try {
+        const params: { limit: number } = { limit: 120 };
+        const fetchedSessions = await apiClient.chat.listSessions(params);
+        setSessions(fetchedSessions);
+      } catch {
+        // Sidebar refresh is best-effort
+      }
     },
-    [currentSessionId, loadSessions, selectedModel, sendMessage]
+    [currentSessionId, loadSessionDetail, selectedModel, sendMessage, setSessions]
   );
 
   const handleOpenDocument = useCallback(
@@ -247,12 +260,9 @@ export function ChatView() {
         />
 
         <div className="chat-main-column">
-          <div className="chat-container-inner">
-            {/* Column header — title + model selector (single, no duplicate) */}
+          <div className="chat-header-wrap">
             <div className="chat-column-header">
-              <h2 className="chat-column-title">GraphRAG 智能对话</h2>
               <label className="chat-model-badge" htmlFor="chat-model-select">
-                模型:
                 <select
                   id="chat-model-select"
                   value={selectedModel}
@@ -266,8 +276,7 @@ export function ChatView() {
                     fontSize: "0.85rem",
                     cursor: "pointer",
                     outline: "none",
-                    marginLeft: 4,
-                    maxWidth: 140
+                    maxWidth: 160
                   }}
                 >
                   {models.map((model) => (
@@ -276,15 +285,17 @@ export function ChatView() {
                 </select>
               </label>
             </div>
+          </div>
 
-            <ChatMessages
-              messages={currentMessages}
-              isStreaming={isStreaming || isConnecting}
-              streamingMessage={streamingMessage}
-              onOpenDocument={handleOpenDocument}
-              onOpenGraph={handleOpenGraph}
-            />
+          <ChatMessages
+            messages={currentMessages}
+            isStreaming={isStreaming || isConnecting}
+            streamingMessage={streamingMessage}
+            onOpenDocument={handleOpenDocument}
+            onOpenGraph={handleOpenGraph}
+          />
 
+          <div className="chat-input-wrap">
             <ChatInput
               disabled={!currentSessionId || isLoadingSessions || isLoadingMessages}
               isStreaming={isStreaming || isConnecting}

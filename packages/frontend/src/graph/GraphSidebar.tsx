@@ -1,4 +1,4 @@
-import { Search, X } from "lucide-react";
+import { Search } from "lucide-react";
 import type { GraphFilters } from "../stores/useGraphStore";
 
 interface DocumentFilterOption {
@@ -36,35 +36,36 @@ export function GraphSidebar({
       {/* Header */}
       <div className="side-panel-header">
         <h3 className="side-panel-title">Graph Navigation</h3>
-        <button
-          type="button"
-          className="icon-button"
-          style={{ width: 28, height: 28, fontSize: 12 }}
-          title="Clear filters"
-          onClick={onClearFilters}
-          aria-label="Clear filters"
-        >
-          <X size={13} />
-        </button>
       </div>
 
       {/* Filter content */}
       <div className="graph-sidebar-inner">
 
-        {/* Search */}
+        {/* Search + Reset */}
         <div className="graph-sidebar-field">
-          <span>Search Nodes</span>
-          <div className="side-search-wrap" style={{ flex: "none" }}>
-            <span className="search-icon">
-              <Search size={14} />
-            </span>
-            <input
-              className="side-search-input"
-              value={filters.searchQuery}
-              onChange={(event) => onSearchQueryChange(event.currentTarget.value)}
-              placeholder="Search by name/type..."
-              aria-label="Search graph nodes"
-            />
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            <div className="side-search-wrap" style={{ flex: 1 }}>
+              <span className="search-icon">
+                <Search size={14} />
+              </span>
+              <input
+                className="side-search-input"
+                value={filters.searchQuery}
+                onChange={(event) => onSearchQueryChange(event.currentTarget.value)}
+                placeholder="搜索节点名称/类型..."
+                aria-label="Search graph nodes"
+              />
+            </div>
+            <button
+              type="button"
+              className="icon-action-button"
+              style={{ width: "auto", height: 28, fontSize: "0.75rem", padding: "0 10px", borderRadius: 6, flexShrink: 0 }}
+              title="重置筛选"
+              onClick={onClearFilters}
+              aria-label="重置筛选"
+            >
+              重置
+            </button>
           </div>
         </div>
 

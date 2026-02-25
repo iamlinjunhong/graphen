@@ -36,8 +36,8 @@ export function GraphView() {
   } = useGraphData({
     autoLoad: false,
     defaultMaxDepth: 2,
-    initialLoadLimit: 180,
-    initialFetchMaxNodes: 460
+    initialLoadLimit: 100,
+    initialFetchMaxNodes: 200
   });
 
   const selectedNodeId = useGraphStore((state) => state.selectedNodeId);
@@ -264,7 +264,12 @@ export function GraphView() {
       return;
     }
 
+    // Immediate fit + delayed fit to handle layout computation timing
     graphRef.current?.fitNodesInView();
+    const timer = setTimeout(() => {
+      graphRef.current?.fitNodesInView();
+    }, 1000);
+    return () => clearTimeout(timer);
   }, [layoutMode, visibleReagraph.nodes.length]);
 
   const activeError = viewError ?? error;
@@ -317,45 +322,53 @@ export function GraphView() {
               </div>
             </div>
 
-            <GraphCanvas
-              graphRef={graphRef}
-              nodes={visibleReagraph.nodes}
-              edges={visibleReagraph.edges}
-              layoutMode={layoutMode}
-              selectedNodeId={selectedNodeId}
-              hoveredNodeId={hoveredNodeId}
-              highlightedNodeIds={searchContext.highlightedNodeIds}
-              onNodeClick={handleNodeClick}
-              onNodeHover={setHoveredNodeId}
-              onCanvasClick={() => {
-                setHoveredNodeId(null);
-                setSelectedNodeId(null);
-              }}
-            />
+            <div className="graph-canvas-inner">
+              {isLoading && (
+                <div className="graph-loading-overlay">
+                  <div className="graph-loading-spinner" />
+                  <span>Loading graph data...</span>
+                </div>
+              )}
+              <GraphCanvas
+                graphRef={graphRef}
+                nodes={visibleReagraph.nodes}
+                edges={visibleReagraph.edges}
+                layoutMode={layoutMode}
+                selectedNodeId={selectedNodeId}
+                hoveredNodeId={hoveredNodeId}
+                highlightedNodeIds={searchContext.highlightedNodeIds}
+                onNodeClick={handleNodeClick}
+                onNodeHover={setHoveredNodeId}
+                onCanvasClick={() => {
+                  setHoveredNodeId(null);
+                  setSelectedNodeId(null);
+                }}
+              />
+            </div>
           </section>
         </div>
+
+        <NodeDetailPanel
+          node={selectedNode}
+          degree={selectedNodeDegree}
+          neighborNames={selectedNodeNeighbors}
+          isExpanding={expandingNodeId === selectedNode?.id}
+          onExpand={(node) => {
+            void handleExpandNode(node.id);
+          }}
+          onClose={() => {
+            setSelectedNodeId(null);
+            setHoveredNodeId(null);
+          }}
+          onFilterDocument={(documentId) => {
+            if (!filters.documentIds.includes(documentId)) {
+              toggleDocumentFilter(documentId);
+            }
+          }}
+        />
       </div>
 
       {activeError ? <p className="docs-error-banner">{activeError}</p> : null}
-
-      <NodeDetailPanel
-        node={selectedNode}
-        degree={selectedNodeDegree}
-        neighborNames={selectedNodeNeighbors}
-        isExpanding={expandingNodeId === selectedNode?.id}
-        onExpand={(node) => {
-          void handleExpandNode(node.id);
-        }}
-        onClose={() => {
-          setSelectedNodeId(null);
-          setHoveredNodeId(null);
-        }}
-        onFilterDocument={(documentId) => {
-          if (!filters.documentIds.includes(documentId)) {
-            toggleDocumentFilter(documentId);
-          }
-        }}
-      />
     </section>
   );
 }

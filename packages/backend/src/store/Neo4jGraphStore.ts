@@ -150,7 +150,7 @@ export class Neo4jGraphStore implements AbstractGraphStore {
         SKIP $offset
         LIMIT $limit
         `,
-        { type, limit: safeLimit, offset: safeOffset }
+        { type, limit: neo4j.int(safeLimit), offset: neo4j.int(safeOffset) }
       );
 
       return result.records.map((record) => this.mapGraphNode(record.get("e") as Node));
@@ -174,7 +174,7 @@ export class Neo4jGraphStore implements AbstractGraphStore {
           RETURN node, score
           LIMIT $limit
           `,
-          { query: keyword, limit: safeLimit }
+          { query: keyword, limit: neo4j.int(safeLimit) }
         );
 
         return result.records.map((record) => ({
@@ -190,7 +190,7 @@ export class Neo4jGraphStore implements AbstractGraphStore {
           RETURN node, 1.0 AS score
           LIMIT $limit
           `,
-          { query: keyword, limit: safeLimit }
+          { query: keyword, limit: neo4j.int(safeLimit) }
         );
 
         return fallback.records.map((record) => ({
@@ -227,7 +227,7 @@ export class Neo4jGraphStore implements AbstractGraphStore {
           source.name = edge.sourceNodeId,
           source.type = "Unknown",
           source.description = "",
-          source.properties = {},
+          source.properties = '{}',
           source.sourceDocumentIds = [],
           source.sourceChunkIds = [],
           source.confidence = 1.0,
@@ -238,7 +238,7 @@ export class Neo4jGraphStore implements AbstractGraphStore {
           target.name = edge.targetNodeId,
           target.type = "Unknown",
           target.description = "",
-          target.properties = {},
+          target.properties = '{}',
           target.sourceDocumentIds = [],
           target.sourceChunkIds = [],
           target.confidence = 1.0,
@@ -290,19 +290,23 @@ export class Neo4jGraphStore implements AbstractGraphStore {
   }
 
   async getNeighbors(nodeId: string, depth = 1): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
-    const safeDepth = Math.max(1, depth);
+    const safeDepth = Math.max(1, Math.min(depth, 5));
 
     return this.withSession("READ", async (session) => {
       const nodeResult = await session.run(
         `
         MATCH (root:Entity {id: $nodeId})
-        OPTIONAL MATCH (root)-[:RELATED_TO*1..$depth]-(neighbor:Entity)
+        CALL {
+          WITH root
+          MATCH (root)-[:RELATED_TO*1..${safeDepth}]-(neighbor:Entity)
+          RETURN DISTINCT neighbor
+        }
         WITH collect(DISTINCT root) + collect(DISTINCT neighbor) AS rawNodes
         UNWIND rawNodes AS node
         WITH node WHERE node IS NOT NULL
         RETURN DISTINCT node
         `,
-        { nodeId, depth: safeDepth }
+        { nodeId }
       );
 
       const nodes = nodeResult.records.map((record) => this.mapGraphNode(record.get("node") as Node));
@@ -348,8 +352,8 @@ export class Neo4jGraphStore implements AbstractGraphStore {
           `,
           {
             centerNodeIds: query.centerNodeIds,
-            maxDepth: safeMaxDepth,
-            candidateLimit: safeMaxNodes * 3
+            maxDepth: neo4j.int(safeMaxDepth),
+            candidateLimit: neo4j.int(safeMaxNodes * 3)
           }
         );
         candidateNodes = result.records.map((record) => this.mapGraphNode(record.get("node") as Node));
@@ -360,7 +364,7 @@ export class Neo4jGraphStore implements AbstractGraphStore {
           RETURN node
           LIMIT $candidateLimit
           `,
-          { candidateLimit: safeMaxNodes * 3 }
+          { candidateLimit: neo4j.int(safeMaxNodes * 3) }
         );
         candidateNodes = result.records.map((record) => this.mapGraphNode(record.get("node") as Node));
       }
@@ -425,7 +429,7 @@ export class Neo4jGraphStore implements AbstractGraphStore {
         `,
         {
           vector,
-          k: safeK,
+          k: neo4j.int(safeK),
           filter: filter ?? null
         }
       );
@@ -451,7 +455,7 @@ export class Neo4jGraphStore implements AbstractGraphStore {
         YIELD node, score
         RETURN node, score
         `,
-        { vector, k: safeK }
+        { vector, k: neo4j.int(safeK) }
       );
 
       return result.records.map((record) => ({
@@ -557,7 +561,7 @@ export class Neo4jGraphStore implements AbstractGraphStore {
           d.fileSize = 0,
           d.status = "parsing",
           d.uploadedAt = chunk.createdAt,
-          d.metadata = {}
+          d.metadata = '{}'
         MERGE (d)-[rel:HAS_CHUNK]->(c)
         SET rel.index = chunk.index
         `,
@@ -675,12 +679,16 @@ export class Neo4jGraphStore implements AbstractGraphStore {
 
   private mapGraphNode(node: Node): GraphNode {
     const props = this.asRecord(node.properties);
+    const propsRaw = props.properties;
+    const parsedProps = typeof propsRaw === "string"
+      ? (() => { try { return JSON.parse(propsRaw); } catch { return {}; } })()
+      : propsRaw;
     const graphNode: GraphNode = {
       id: this.toString(props.id, node.elementId),
       name: this.toString(props.name, ""),
       type: this.toString(props.type, "Unknown"),
       description: this.toString(props.description, ""),
-      properties: this.asRecord(props.properties),
+      properties: this.asRecord(parsedProps),
       sourceDocumentIds: this.toStringArray(props.sourceDocumentIds),
       sourceChunkIds: this.toStringArray(props.sourceChunkIds),
       confidence: this.toNumber(props.confidence, 1),
@@ -698,13 +706,17 @@ export class Neo4jGraphStore implements AbstractGraphStore {
 
   private mapGraphEdge(relationship: Relationship): GraphEdge {
     const props = this.asRecord(relationship.properties);
+    const edgePropsRaw = props.properties;
+    const parsedEdgeProps = typeof edgePropsRaw === "string"
+      ? (() => { try { return JSON.parse(edgePropsRaw); } catch { return {}; } })()
+      : edgePropsRaw;
     return {
       id: this.toString(props.id, relationship.elementId),
       sourceNodeId: this.toString(props.sourceNodeId, ""),
       targetNodeId: this.toString(props.targetNodeId, ""),
       relationType: this.toString(props.relationType, "RELATED_TO"),
       description: this.toString(props.description, ""),
-      properties: this.asRecord(props.properties),
+      properties: this.asRecord(parsedEdgeProps),
       weight: this.toNumber(props.weight, 1),
       sourceDocumentIds: this.toStringArray(props.sourceDocumentIds),
       confidence: this.toNumber(props.confidence, 1),
@@ -714,7 +726,10 @@ export class Neo4jGraphStore implements AbstractGraphStore {
 
   private mapDocument(node: Node): Document {
     const props = this.asRecord(node.properties);
-    const metadataRecord = this.asRecord(props.metadata);
+    const metadataRaw = props.metadata;
+    const metadataRecord = typeof metadataRaw === "string"
+      ? this.asRecord((() => { try { return JSON.parse(metadataRaw); } catch { return {}; } })())
+      : this.asRecord(metadataRaw);
     const metadata: Document["metadata"] = {};
 
     const pageCount = this.toOptionalNumber(metadataRecord.pageCount);
@@ -764,7 +779,10 @@ export class Neo4jGraphStore implements AbstractGraphStore {
 
   private mapDocumentChunk(node: Node): DocumentChunk {
     const props = this.asRecord(node.properties);
-    const metadataRecord = this.asRecord(props.metadata);
+    const chunkMetaRaw = props.metadata;
+    const metadataRecord = typeof chunkMetaRaw === "string"
+      ? this.asRecord((() => { try { return JSON.parse(chunkMetaRaw); } catch { return {}; } })())
+      : this.asRecord(chunkMetaRaw);
     const metadata: DocumentChunk["metadata"] = {};
 
     const pageNumber = this.toOptionalNumber(metadataRecord.pageNumber);
@@ -803,7 +821,7 @@ export class Neo4jGraphStore implements AbstractGraphStore {
       name: node.name,
       type: node.type,
       description: node.description,
-      properties: node.properties,
+      properties: JSON.stringify(node.properties ?? {}),
       embedding: node.embedding ?? null,
       sourceDocumentIds: node.sourceDocumentIds,
       sourceChunkIds: node.sourceChunkIds,
@@ -820,7 +838,7 @@ export class Neo4jGraphStore implements AbstractGraphStore {
       targetNodeId: edge.targetNodeId,
       relationType: edge.relationType,
       description: edge.description,
-      properties: edge.properties,
+      properties: JSON.stringify(edge.properties ?? {}),
       weight: edge.weight,
       sourceDocumentIds: edge.sourceDocumentIds,
       confidence: edge.confidence,
@@ -837,7 +855,7 @@ export class Neo4jGraphStore implements AbstractGraphStore {
       status: doc.status,
       uploadedAt: doc.uploadedAt.toISOString(),
       parsedAt: doc.parsedAt ? doc.parsedAt.toISOString() : null,
-      metadata: doc.metadata,
+      metadata: JSON.stringify(doc.metadata ?? {}),
       errorMessage: doc.errorMessage ?? null
     };
   }
@@ -849,7 +867,7 @@ export class Neo4jGraphStore implements AbstractGraphStore {
       content: chunk.content,
       index: chunk.index,
       embedding: chunk.embedding ?? null,
-      metadata: chunk.metadata,
+      metadata: JSON.stringify(chunk.metadata ?? {}),
       createdAt: new Date().toISOString()
     };
   }

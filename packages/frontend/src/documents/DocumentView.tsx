@@ -141,7 +141,7 @@ export function DocumentView() {
         signal?: AbortSignal;
       } = {
         page: 1,
-        pageSize: 200
+        pageSize: 100
       };
       if (signal) {
         listParams.signal = signal;

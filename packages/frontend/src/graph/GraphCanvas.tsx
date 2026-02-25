@@ -145,6 +145,7 @@ export function GraphCanvas({
         maxDistance={6000}
         minZoom={0.5}
         maxZoom={8}
+        glOptions={{ preserveDrawingBuffer: true }}
         onNodeClick={(node) => onNodeClick(node.id)}
         onNodePointerOver={(node) => onNodeHover(node.id)}
         onNodePointerOut={() => onNodeHover(null)}

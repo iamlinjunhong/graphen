@@ -1,4 +1,4 @@
-import { Zap, UserRound } from "lucide-react";
+import { Zap } from "lucide-react";
 import type { ChatMessage, ChatSource } from "@graphen/shared";
 import { ChatSourceCard } from "./ChatSourceCard";
 
@@ -42,8 +42,8 @@ export function ChatMessages({
               className={isAssistant ? "chat-message-card is-assistant" : "chat-message-card is-user"}
             >
               {/* Avatar */}
-              <span className="message-icon">
-                {isAssistant ? <Zap size={15} strokeWidth={2.5} /> : <UserRound size={15} />}
+              <span className={isAssistant ? "message-icon" : "message-icon user-avatar-icon"}>
+                {isAssistant ? <Zap size={15} strokeWidth={2.5} /> : "L"}
               </span>
 
               {/* Body */}
@@ -82,7 +82,7 @@ export function ChatMessages({
               <div className="chat-message-bubble">
                 <p>
                   {streamingMessage.length > 0 ? streamingMessage : "思考中..."}
-                  <span className="chat-cursor">|</span>
+                  {streamingMessage.length > 0 ? <span className="chat-cursor">|</span> : null}
                 </p>
               </div>
             </div>

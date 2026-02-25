@@ -47,10 +47,10 @@ const questionAnalysisSchema = z.object({
     use_graph: z.boolean(),
     use_vector: z.boolean(),
     graph_depth: z.number().int().min(0),
-    vector_top_k: z.number().int().min(1),
+    vector_top_k: z.number().int().min(0).default(0),
     need_aggregation: z.boolean()
   }),
-  rewritten_query: z.string().min(1)
+  rewritten_query: z.string().default("")
 });
 
 const modelCostPerThousandTokens: Record<TokenUsagePhase, { input: number; output: number }> = {

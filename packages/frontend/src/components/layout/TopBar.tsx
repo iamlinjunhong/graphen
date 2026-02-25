@@ -1,4 +1,4 @@
-import { Bell, Box, ChevronDown, Moon, Settings, Sun, SunMoon } from "lucide-react";
+import { Bell, Box, ChevronDown, Moon, Settings, Sun } from "lucide-react";
 import type { ThemeMode } from "../../stores/useAppStore";
 
 interface TopBarProps {
@@ -44,14 +44,6 @@ export function TopBar({
             aria-label="Dark theme"
           >
             <Moon size={15} />
-          </button>
-          <button
-            type="button"
-            className={themeMode === "system" ? "is-active" : ""}
-            onClick={() => onThemeChange("system")}
-            aria-label="System theme"
-          >
-            <SunMoon size={15} />
           </button>
         </div>
 

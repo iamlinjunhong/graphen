@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { Request, Response } from "express";
+import type { Request, RequestHandler, Response } from "express";
 import { Router } from "express";
 import multer from "multer";
 import { z } from "zod";
@@ -244,7 +244,22 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
 
   const documentsRouter = Router();
 
-  documentsRouter.post("/upload", upload.single("file"), async (req, res) => {
+  /** Wrap multer middleware to catch MulterError (e.g. file too large) gracefully */
+  const handleUpload: RequestHandler = (req, res, next) => {
+    upload.single("file")(req, res, (err) => {
+      if (err) {
+        const message = err instanceof multer.MulterError
+          ? (err.code === "LIMIT_FILE_SIZE"
+            ? `File too large. Maximum allowed size is ${Math.round(appConfig.MAX_UPLOAD_SIZE / 1024 / 1024)}MB`
+            : err.message)
+          : (err instanceof Error ? err.message : "File upload failed");
+        return res.status(400).json({ error: message });
+      }
+      next();
+    });
+  };
+
+  documentsRouter.post("/upload", handleUpload, async (req, res) => {
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded" });
     }
