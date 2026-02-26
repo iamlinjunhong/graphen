@@ -40,9 +40,6 @@ graphen/
 │   └── shared/            # Shared type definitions
 ├── cases/                 # Sample test cases
 ├── data/                  # Local runtime data (.gitignore)
-├── docs/                  # Documentation
-│   ├── design/            # Design documents
-│   └── opt/               # Optimization documents
 ├── .env.example           # Environment variable template
 ├── pnpm-workspace.yaml    # pnpm workspace config
 └── tsconfig.base.json     # Shared TypeScript config
@@ -242,4 +239,4 @@ pnpm --filter @graphen/backend test:integration
 
 ## 📄 License
 
-MIT
+MIT LICENSE
