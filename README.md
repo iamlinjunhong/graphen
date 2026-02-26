@@ -237,14 +237,6 @@ pnpm --filter @graphen/backend test:integration
 
 ---
 
-## 📖 设计文档
-
-详细架构设计、数据模型、API 接口、提示词工程等请参阅：
-
-- [架构设计文档](./docs/design/architecture.md)
-
----
-
 ## 📄 License
 
-Private — 仅供内部使用。
+MIT
