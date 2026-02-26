@@ -9,6 +9,7 @@ import type {
   Document,
   DocumentStatus,
   GetConfigResponse,
+  GetDocumentContentResponse,
   GraphEdge,
   GraphNode,
   GraphOverviewResponse,
@@ -349,7 +350,8 @@ export const apiClient = {
         signal
       });
 
-      const documentId = result.headers.get("x-document-id") ?? "";
+      const documentId =
+        result.data.documentId || result.headers.get("x-document-id") || "";
       return {
         ...result.data,
         documentId
@@ -363,11 +365,20 @@ export const apiClient = {
       });
     },
 
-    async reparse(id: string, signal?: AbortSignal): Promise<ReparseDocumentResponse> {
+    async reparse(id: string, content?: string, signal?: AbortSignal): Promise<ReparseDocumentResponse> {
       const result = await request<ReparseDocumentResponse>(`/documents/${id}/reparse`, {
         method: "POST",
+        json: content !== undefined ? { content } : undefined,
         signal
       });
+      return result.data;
+    },
+
+    async getContent(id: string, signal?: AbortSignal): Promise<GetDocumentContentResponse> {
+      const result = await request<GetDocumentContentResponse>(
+        `/documents/${id}/content`,
+        { signal }
+      );
       return result.data;
     },
 

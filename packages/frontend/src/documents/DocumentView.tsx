@@ -3,7 +3,10 @@ import type { Document, DocumentStatus } from "@graphen/shared";
 import { useSSE } from "../hooks/useSSE";
 import { apiClient } from "../services/api";
 import { useDocumentStore } from "../stores/useDocumentStore";
-import { DocumentPreview } from "./DocumentPreview";
+import type { EditorDraft, UploadQueueItem } from "../stores/useDocumentStore";
+import { processUploadQueue } from "../utils/uploadQueue";
+import type { UploadSingleResult } from "../utils/uploadQueue";
+import { DocumentEditor } from "./DocumentEditor";
 import { DocumentSidebar } from "./DocumentSidebar";
 import { UploadArea } from "./UploadArea";
 
@@ -55,23 +58,38 @@ function inferFileType(filename: string): Document["fileType"] {
   }
 }
 
-async function extractPreviewSnippet(file: File): Promise<string | null> {
-  const extension = file.name.split(".").pop()?.toLowerCase();
-  if (extension !== "md" && extension !== "txt") {
-    return null;
-  }
+// --- Pre-validation (B8) ---
+const SUPPORTED_EXTENSIONS = new Set(["pdf", "md", "txt"]);
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB — matches backend MAX_UPLOAD_SIZE
+const MAX_BATCH_COUNT = 20;
 
-  const content = await file.text();
-  const normalized = content.replace(/\r\n/g, "\n").trim();
-  if (normalized.length === 0) {
-    return null;
-  }
-
-  const maxLength = 4000;
-  return normalized.length > maxLength
-    ? `${normalized.slice(0, maxLength)}\n\n...`
-    : normalized;
+function isSupportedFile(file: File): boolean {
+  const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+  return SUPPORTED_EXTENSIONS.has(ext);
 }
+
+interface ValidationResult {
+  accepted: File[];
+  rejected: Array<{ file: File; reason: string }>;
+}
+
+function validateFiles(files: File[]): ValidationResult {
+  const accepted: File[] = [];
+  const rejected: ValidationResult["rejected"] = [];
+
+  for (const file of files) {
+    if (!isSupportedFile(file)) {
+      rejected.push({ file, reason: "Unsupported file type. Only .pdf, .md, .txt are allowed." });
+    } else if (file.size > MAX_FILE_SIZE) {
+      rejected.push({ file, reason: `File too large. Maximum size is ${MAX_FILE_SIZE / 1024 / 1024}MB.` });
+    } else {
+      accepted.push(file);
+    }
+  }
+
+  return { accepted, rejected };
+}
+
 
 export function DocumentView() {
   const documents = useDocumentStore((state) => state.documents);
@@ -83,11 +101,26 @@ export function DocumentView() {
   const upsertDocument = useDocumentStore((state) => state.upsertDocument);
   const removeDocument = useDocumentStore((state) => state.removeDocument);
   const setSelectedDocumentId = useDocumentStore((state) => state.setSelectedDocumentId);
-  const setUploading = useDocumentStore((state) => state.setUploading);
   const upsertUpload = useDocumentStore((state) => state.upsertUpload);
   const removeUpload = useDocumentStore((state) => state.removeUpload);
   const setFilterQuery = useDocumentStore((state) => state.setFilterQuery);
   const setFilterStatus = useDocumentStore((state) => state.setFilterStatus);
+  const draftsByDocumentId = useDocumentStore((state) => state.draftsByDocumentId);
+  const setDraft = useDocumentStore((state) => state.setDraft);
+  const clearDraft = useDocumentStore((state) => state.clearDraft);
+  const setDraftContent = useDocumentStore((state) => state.setDraftContent);
+
+  // Batch upload actions
+  const incrementActiveUploadRequests = useDocumentStore((s) => s.incrementActiveUploadRequests);
+  const decrementActiveUploadRequests = useDocumentStore((s) => s.decrementActiveUploadRequests);
+  const startBatchUpload = useDocumentStore((s) => s.startBatchUpload);
+  const incrementBatchCompleted = useDocumentStore((s) => s.incrementBatchCompleted);
+  const incrementBatchFailed = useDocumentStore((s) => s.incrementBatchFailed);
+  const finishBatchUpload = useDocumentStore((s) => s.finishBatchUpload);
+  const createQueueItem = useDocumentStore((s) => s.createQueueItem);
+  const markUploadError = useDocumentStore((s) => s.markUploadError);
+  const bindUploadDocumentId = useDocumentStore((s) => s.bindUploadDocumentId);
+  const batchUploadActive = useDocumentStore((s) => s.batchUploadActive);
 
   const {
     isConnected: isStatusConnected,
@@ -103,7 +136,6 @@ export function DocumentView() {
   const [isReparsing, setIsReparsing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progressByDocumentId, setProgressByDocumentId] = useState<Record<string, number>>({});
-  const [previewByDocumentId, setPreviewByDocumentId] = useState<Record<string, string>>({});
 
   const refreshDocuments = useCallback(async (signal?: AbortSignal) => {
     setIsLoading(true);
@@ -141,6 +173,27 @@ export function DocumentView() {
     }
   }, [setDocuments, setSelectedDocumentId]);
 
+  // B9: Debounced + single-flight refresh
+  const refreshDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isRefreshingRef = useRef(false);
+
+  const scheduleRefreshDocuments = useCallback(
+    (delay = 250) => {
+      if (refreshDebounceRef.current) {
+        clearTimeout(refreshDebounceRef.current);
+      }
+      refreshDebounceRef.current = setTimeout(() => {
+        refreshDebounceRef.current = null;
+        if (isRefreshingRef.current) return; // single-flight
+        isRefreshingRef.current = true;
+        void refreshDocuments().finally(() => {
+          isRefreshingRef.current = false;
+        });
+      }, delay);
+    },
+    [refreshDocuments]
+  );
+
   useEffect(() => {
     const controller = new AbortController();
     void refreshDocuments(controller.signal);
@@ -165,95 +218,173 @@ export function DocumentView() {
     });
   }, [documents, filters.query, filters.status]);
 
-  const selectedPreview = selectedDocumentId
-    ? (previewByDocumentId[selectedDocumentId] ?? null)
-    : null;
   const selectedDocumentStatus = selectedDocument?.status;
 
-  // Fetch preview from backend when selecting a completed document
+  // Load editor content when selecting a completed document
   useEffect(() => {
     if (!selectedDocumentId || !selectedDocumentStatus) return;
     if (selectedDocumentStatus !== "completed") return;
-    if (previewByDocumentId[selectedDocumentId]) return;
+    // Read draft from store snapshot to avoid re-triggering this effect
+    const existingDraft = useDocumentStore.getState().draftsByDocumentId[selectedDocumentId];
+    if (existingDraft) return;
+
+    // Mark as loading
+    setDraft(selectedDocumentId, {
+      originalContent: "",
+      editedContent: "",
+      isDirty: false,
+      isLoadingContent: true,
+      editorMode: "edit",
+      contentSource: "parsed",
+      truncated: false,
+      totalCharCount: 0,
+    });
 
     const controller = new AbortController();
     apiClient.documents
-      .getPreview(selectedDocumentId, controller.signal)
-      .then((preview) => {
-        setPreviewByDocumentId((current) => ({
-          ...current,
-          [selectedDocumentId]: preview
-        }));
+      .getContent(selectedDocumentId, controller.signal)
+      .then((resp) => {
+        const draft: EditorDraft = {
+          originalContent: resp.content,
+          editedContent: resp.content,
+          isDirty: false,
+          isLoadingContent: false,
+          editorMode: "edit",
+          contentSource: resp.contentSource,
+          truncated: resp.truncated,
+          totalCharCount: resp.totalCharCount,
+        };
+        setDraft(selectedDocumentId, draft);
       })
-      .catch((error) => {
-        if (error instanceof Error && error.name === "AbortError") return;
+      .catch((err) => {
+        if (err instanceof Error && err.name === "AbortError") return;
+        // Clear loading state on error
+        clearDraft(selectedDocumentId);
       });
 
     return () => controller.abort();
-  }, [selectedDocumentId, selectedDocumentStatus, previewByDocumentId]);
+  }, [selectedDocumentId, selectedDocumentStatus, setDraft, clearDraft]);
 
-  const handleUpload = useCallback(async (file: File) => {
-    const uploadId = globalThis.crypto.randomUUID();
+  // B7: handleUploadSingle — returns UploadSingleResult, uses activeUploadRequests
+  const handleUploadSingle = useCallback(
+    async (
+      item: UploadQueueItem,
+      options?: { autoSelectOnSuccess?: boolean }
+    ): Promise<UploadSingleResult> => {
+      incrementActiveUploadRequests();
+      try {
+        const uploadResult = await apiClient.documents.upload(item.file!);
+        const documentId = uploadResult.documentId;
+        bindUploadDocumentId(item.id, documentId);
 
-    setError(null);
-    setUploading(true);
-    upsertUpload({
-      id: uploadId,
-      filename: file.name,
-      progress: 10,
-      status: "uploading"
-    });
+        upsertDocument({
+          id: documentId,
+          filename: item.filename,
+          fileType: inferFileType(item.filename),
+          fileSize: item.file!.size,
+          status: "uploading",
+          uploadedAt: new Date(),
+          metadata: {}
+        });
 
-    try {
-      const previewSnippet = await extractPreviewSnippet(file);
-      const uploadResult = await apiClient.documents.upload(file);
-      const documentId = uploadResult.documentId || uploadId;
-      const now = new Date();
+        if (options?.autoSelectOnSuccess ?? true) {
+          setSelectedDocumentId(documentId);
+        }
 
-      upsertDocument({
-        id: documentId,
-        filename: file.name,
-        fileType: inferFileType(file.name),
-        fileSize: file.size,
-        status: "uploading",
-        uploadedAt: now,
-        metadata: {}
-      });
-      setSelectedDocumentId(documentId);
+        return { ok: true, documentId };
+      } catch (err) {
+        return {
+          ok: false,
+          stage: "upload",
+          message: err instanceof Error ? err.message : "Upload failed"
+        };
+      } finally {
+        decrementActiveUploadRequests();
+      }
+    },
+    [incrementActiveUploadRequests, decrementActiveUploadRequests, bindUploadDocumentId, upsertDocument, setSelectedDocumentId]
+  );
 
-      if (previewSnippet) {
-        setPreviewByDocumentId((current) => ({
-          ...current,
-          [documentId]: previewSnippet
-        }));
+  // B8: handleBatchUpload — pre-validation + single/multi path
+  const handleBatchUpload = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return;
+
+      // Batch count limit
+      if (files.length > MAX_BATCH_COUNT) {
+        setError(`Maximum ${MAX_BATCH_COUNT} files per batch. Please split into smaller batches.`);
+        return;
       }
 
-      setProgressByDocumentId((current) => ({
-        ...current,
-        [documentId]: 10
-      }));
+      setError(null);
 
-      removeUpload(uploadId);
-      await refreshDocuments();
-
-      const latestDoc = useDocumentStore.getState().documents.find((d) => d.id === documentId);
-      if (latestDoc && latestDoc.status === "error") {
-        setProgressByDocumentId((current) => ({ ...current, [documentId]: 100 }));
+      // Pre-validate
+      const { accepted, rejected } = validateFiles(files);
+      for (const { file, reason } of rejected) {
+        const item = createQueueItem(file);
+        markUploadError(item.id, "upload", reason);
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Upload failed";
-      setError(message);
-      upsertUpload({
-        id: uploadId,
-        filename: file.name,
-        progress: 100,
-        status: "error",
-        error: message
-      });
-    } finally {
-      setUploading(false);
-    }
-  }, [refreshDocuments, removeUpload, setSelectedDocumentId, setUploading, upsertDocument, upsertUpload]);
+
+      if (accepted.length === 0) return;
+
+      // Single file — preserve original auto-select behavior
+      if (accepted.length === 1) {
+        const item = createQueueItem(accepted[0]!);
+        // Also show in legacy upload list for UploadArea compat
+        upsertUpload({ id: item.id, filename: item.filename, progress: 10, status: "uploading" });
+        const result = await handleUploadSingle(item, { autoSelectOnSuccess: true });
+        if (result.ok) {
+          removeUpload(item.id);
+        } else {
+          markUploadError(item.id, "upload", result.message);
+          upsertUpload({ id: item.id, filename: item.filename, progress: 100, status: "error", error: result.message });
+        }
+        scheduleRefreshDocuments();
+        return;
+      }
+
+      // Multi-file batch upload
+      startBatchUpload(accepted.length);
+      const queueItems = accepted.map((file) => createQueueItem(file));
+
+      await processUploadQueue(
+        queueItems,
+        async (item) => handleUploadSingle(item, { autoSelectOnSuccess: false }),
+        {
+          concurrency: 3,
+          onStatusChange: (itemId, status) => {
+            const store = useDocumentStore.getState();
+            store.updateQueueItem(itemId, { status });
+          },
+          onWorkerResult: (itemId, result) => {
+            if (result.ok) {
+              incrementBatchCompleted();
+            } else {
+              incrementBatchFailed();
+              const store = useDocumentStore.getState();
+              store.markUploadError(itemId, "upload", result.message);
+            }
+          }
+        }
+      );
+
+      scheduleRefreshDocuments();
+      finishBatchUpload();
+    },
+    [
+      handleUploadSingle, createQueueItem, markUploadError, upsertUpload, removeUpload,
+      startBatchUpload, incrementBatchCompleted, incrementBatchFailed, finishBatchUpload,
+      scheduleRefreshDocuments
+    ]
+  );
+
+  // Legacy single-file handler — delegates to handleBatchUpload for backward compat
+  const handleUpload = useCallback(
+    async (file: File) => {
+      await handleBatchUpload([file]);
+    },
+    [handleBatchUpload]
+  );
 
   const handleDelete = useCallback(async (document: Document) => {
     const confirmed = window.confirm(`Delete document "${document.filename}"? This action cannot be undone.`);
@@ -272,10 +403,7 @@ export function DocumentView() {
         const { [document.id]: _removed, ...rest } = current;
         return rest;
       });
-      setPreviewByDocumentId((current) => {
-        const { [document.id]: _removed, ...rest } = current;
-        return rest;
-      });
+      clearDraft(document.id);
 
       const state = useDocumentStore.getState();
       const firstDocument = state.documents[0];
@@ -290,12 +418,13 @@ export function DocumentView() {
     }
   }, [removeDocument, setSelectedDocumentId]);
 
-  const handleReparse = useCallback(async (document: Document) => {
+  const handleReparse = useCallback(async (document: Document, content?: string) => {
     setError(null);
     setIsReparsing(true);
 
     try {
-      await apiClient.documents.reparse(document.id);
+      const isDirty = content !== undefined && content !== draftsByDocumentId[document.id]?.originalContent;
+      await apiClient.documents.reparse(document.id, isDirty ? content : undefined);
       upsertDocument({
         ...document,
         status: "uploading",
@@ -305,6 +434,7 @@ export function DocumentView() {
         ...current,
         [document.id]: STATUS_PROGRESS_FALLBACK.uploading
       }));
+      clearDraft(document.id);
       await refreshDocuments();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to reparse document";
@@ -312,7 +442,7 @@ export function DocumentView() {
     } finally {
       setIsReparsing(false);
     }
-  }, [refreshDocuments, upsertDocument]);
+  }, [refreshDocuments, upsertDocument, clearDraft, draftsByDocumentId]);
 
   const handleStatusEvent = useCallback((rawData: string) => {
     const payload = parseJson<StatusStreamPayload>(rawData);
@@ -397,17 +527,75 @@ export function DocumentView() {
     return () => clearInterval(timer);
   }, [isStatusConnected, isStatusConnecting, refreshDocuments, selectedDocumentId, selectedDocumentStatus]);
 
+  // B9: Batch-mode polling — 3s interval while batch is active or documents are processing
+  useEffect(() => {
+    if (!batchUploadActive) return;
+
+    const timer = setInterval(() => {
+      scheduleRefreshDocuments(0);
+    }, 3000);
+
+    return () => clearInterval(timer);
+  }, [batchUploadActive, scheduleRefreshDocuments]);
+
+  const handleContentChange = useCallback(
+    (content: string) => {
+      if (selectedDocumentId) {
+        setDraftContent(selectedDocumentId, content);
+      }
+    },
+    [selectedDocumentId, setDraftContent]
+  );
+
+  const handleDiscard = useCallback(() => {
+    if (!selectedDocumentId) return;
+    const draft = draftsByDocumentId[selectedDocumentId];
+    if (!draft) return;
+    setDraft(selectedDocumentId, {
+      ...draft,
+      editedContent: draft.originalContent,
+      isDirty: false,
+    });
+  }, [selectedDocumentId, draftsByDocumentId, setDraft]);
+
+  const handleSelectDocument = useCallback(
+    (docId: string | null) => {
+      if (selectedDocumentId && docId !== selectedDocumentId) {
+        const currentDraft = draftsByDocumentId[selectedDocumentId];
+        if (currentDraft?.isDirty) {
+          const discard = window.confirm(
+            "You have unsaved changes. Discard and switch document?"
+          );
+          if (!discard) return;
+          // Clear dirty state
+          setDraft(selectedDocumentId, {
+            ...currentDraft,
+            editedContent: currentDraft.originalContent,
+            isDirty: false,
+          });
+        }
+      }
+      setSelectedDocumentId(docId);
+    },
+    [selectedDocumentId, draftsByDocumentId, setDraft, setSelectedDocumentId]
+  );
+
+  const selectedDraft = selectedDocumentId
+    ? (draftsByDocumentId[selectedDocumentId] ?? null)
+    : null;
+
   return (
     <section className="page-shell">
       <input
         ref={fileInputRef}
         type="file"
         hidden
+        multiple
         accept=".pdf,.md,.txt,text/plain,text/markdown,application/pdf"
         onChange={(event) => {
-          const file = event.currentTarget.files?.item(0);
-          if (file) {
-            void handleUpload(file);
+          const fileList = event.currentTarget.files;
+          if (fileList && fileList.length > 0) {
+            void handleBatchUpload(Array.from(fileList));
           }
           event.currentTarget.value = "";
         }}
@@ -421,7 +609,7 @@ export function DocumentView() {
           query={filters.query}
           status={filters.status}
           isLoading={isLoading}
-          onSelect={setSelectedDocumentId}
+          onSelect={handleSelectDocument}
           onQueryChange={setFilterQuery}
           onStatusChange={setFilterStatus}
           onUploadClick={() => fileInputRef.current?.click()}
@@ -432,11 +620,13 @@ export function DocumentView() {
             <UploadArea isUploading={isUploading} uploads={uploads} onUpload={handleUpload} />
           ) : null}
 
-          <DocumentPreview
+          <DocumentEditor
             document={selectedDocument}
-            previewText={selectedPreview}
+            draft={selectedDraft}
+            onContentChange={handleContentChange}
             onDelete={handleDelete}
             onReparse={handleReparse}
+            onDiscard={handleDiscard}
             isDeleting={isDeleting}
             isReparsing={isReparsing}
           />

@@ -59,6 +59,8 @@ describe("documents api", () => {
     expect(uploadResponse.body.message).toBe("File upload accepted");
     const documentId = uploadResponse.headers["x-document-id"];
     expect(typeof documentId).toBe("string");
+    // B1/B2: documentId also present in response body
+    expect(uploadResponse.body.documentId).toBe(documentId);
 
     await waitFor(async () => {
       const docs = await store.getDocuments();

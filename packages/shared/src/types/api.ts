@@ -13,6 +13,7 @@ export interface ApiSuccessResponse<T> {
 
 export interface UploadDocumentResponse {
   message: string;
+  documentId: string;
   file: {
     originalName: string;
     mimeType: string;

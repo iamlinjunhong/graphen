@@ -917,19 +917,79 @@ button.doc-item {
 }
 
 .docs-console-panel,
-.docs-preview-panel,
 .docs-upload-panel {
   min-height: 0;
 }
 
-.docs-preview-panel {
-  gap: 12px;
-  padding: 16px;
-  flex: 1;
+/* B14: Indeterminate progress bar animation */
+.docs-progress-fill.is-indeterminate {
+  width: 40%;
+  animation: docs-indeterminate 1.4s ease-in-out infinite;
 }
 
-.docs-console-head,
-.docs-preview-head {
+@keyframes docs-indeterminate {
+  0% { left: -40%; right: 100%; }
+  50% { left: 60%; right: -20%; }
+  100% { left: -40%; right: 100%; }
+}
+
+/* B17: Fade-out for completed items */
+.docs-upload-item.is-fading {
+  opacity: 0;
+  transition: opacity 0.6s ease-out;
+}
+
+/* B16: Summary row */
+.docs-upload-summary {
+  padding: 8px 10px 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-top: 1px solid var(--line-soft);
+  margin-top: 4px;
+}
+
+/* B18: Error row with retry button */
+.docs-upload-item-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.docs-retry-button {
+  border: 1px solid var(--line-strong);
+  background: var(--bg-surface);
+  color: var(--accent-primary);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+
+.docs-retry-button:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent-primary);
+}
+
+/* Queue status label colors */
+.docs-queue-status {
+  text-transform: capitalize;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.docs-queue-status.is-error {
+  color: #a0303e;
+}
+
+.docs-queue-status.is-completed {
+  color: #0b6f46;
+}
+
+.docs-console-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -980,64 +1040,266 @@ button.doc-item {
   color: #b44757;
 }
 
-.docs-preview-head h3 {
-  margin: 0;
-}
 
-.docs-preview-filename {
-  margin: 5px 0 0;
-  font-size: 14px;
-  color: var(--text-secondary);
-}
 
-.docs-preview-meta {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(90px, 1fr));
-  gap: 8px;
-}
+/* =====================
+   Document Editor
+   ===================== */
 
-.docs-preview-meta div {
-  border: 1px solid var(--line-soft);
-  border-radius: 10px;
-  padding: 8px;
+.docs-editor-panel {
+  gap: 0;
+  padding: 0;
+  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  background: var(--bg-surface);
+  position: relative;
+  overflow: hidden;
 }
 
-.docs-preview-meta span {
-  font-size: 11px;
-  color: var(--text-muted);
+.docs-editor-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg-panel, var(--bg-surface));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line-soft);
+  padding: 12px 16px;
+  flex-shrink: 0;
 }
 
-.docs-preview-meta strong {
-  font-size: 13px;
+.docs-editor-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.docs-editor-header-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.docs-editor-filename {
+  font-size: 14px;
+  font-weight: 600;
   color: var(--text-primary);
 }
 
-.docs-preview-content {
-  border: 1px solid var(--line-soft);
-  border-radius: 12px;
-  background: var(--bg-surface);
-  padding: 12px;
-  min-height: 120px;
-  flex: 1;
-  overflow: auto;
+.docs-editor-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
-.docs-preview-content pre {
-  margin: 0;
-  white-space: pre-wrap;
+.docs-editor-content {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.docs-editor-content .w-md-editor {
+  flex: 1;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.docs-editor-loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.docs-editor-banner {
+  padding: 8px 16px;
   font-size: 12px;
-  line-height: 1.52;
+  line-height: 1.5;
+  flex-shrink: 0;
+}
+
+.docs-editor-banner.is-info {
+  background: rgba(34, 146, 186, 0.1);
+  color: #0f6e8f;
+  border-bottom: 1px solid rgba(34, 146, 186, 0.2);
+}
+
+.docs-editor-banner.is-warning {
+  background: rgba(217, 167, 6, 0.1);
+  color: #8a6d00;
+  border-top: 1px solid rgba(217, 167, 6, 0.2);
+}
+
+.docs-editor-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  background: var(--bg-panel, var(--bg-surface));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-top: 1px solid var(--line-soft);
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.docs-editor-dirty-indicator {
+  font-size: 12px;
+}
+
+.docs-editor-dirty-text {
+  color: #b8860b;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.docs-editor-dirty-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #d4a017;
+  animation: docs-editor-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes docs-editor-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.docs-editor-clean-text {
+  color: var(--text-muted);
+}
+
+.docs-editor-action-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.docs-action-button.is-primary {
+  background: var(--accent-primary);
+  color: white;
+  border-color: var(--accent-primary);
+}
+
+.docs-action-button.is-primary:hover:not(:disabled) {
+  background: var(--accent-primary-hover, var(--accent-primary));
+  border-color: var(--accent-primary-hover, var(--accent-primary));
+  color: white;
+}
+
+/* =====================
+   react-md-editor Theme Overrides
+   ===================== */
+
+/* Light mode base */
+.docs-editor-content .w-md-editor {
+  --color-fg-default: var(--text-primary);
+  --color-canvas-default: var(--bg-surface);
+  --color-canvas-subtle: var(--bg-secondary);
+  --color-border-default: var(--line-soft);
+  --color-border-muted: var(--line-soft);
+  background-color: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+/* Toolbar */
+.docs-editor-content .w-md-editor-toolbar {
+  background: var(--bg-secondary) !important;
+  border-bottom: 1px solid var(--line-soft) !important;
+  padding: 4px 8px;
+}
+
+.docs-editor-content .w-md-editor-toolbar li > button {
+  color: var(--text-secondary);
+  border-radius: 4px;
+}
+
+.docs-editor-content .w-md-editor-toolbar li > button:hover {
+  color: var(--accent-primary);
+  background: var(--accent-soft);
+}
+
+.docs-editor-content .w-md-editor-toolbar li.active > button {
+  color: var(--accent-primary);
+  background: var(--accent-soft);
+}
+
+.docs-editor-content .w-md-editor-toolbar-divider {
+  background-color: var(--line-soft) !important;
+}
+
+/* Editor textarea – every text layer must share identical font metrics */
+.docs-editor-content .w-md-editor-text-pre,
+.docs-editor-content .w-md-editor-text-input,
+.docs-editor-content .w-md-editor-text,
+.docs-editor-content .w-md-editor-text-pre > code {
+  font-family: var(--font-mono) !important;
+  font-size: 13px !important;
+  line-height: 1.6 !important;
+  letter-spacing: normal !important;
+  tab-size: 2 !important;
+}
+
+/* Preview pane */
+.docs-editor-content .wmde-markdown {
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+  background: var(--bg-surface);
+}
+
+.docs-editor-content .wmde-markdown code {
   font-family: var(--font-mono);
 }
 
-.docs-preview-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
+/* Focus border */
+.docs-editor-content .w-md-editor:focus-within {
+  border-color: var(--accent-primary) !important;
+  box-shadow: 0 0 0 2px rgba(217, 119, 87, 0.15);
+}
+
+/* Dark mode overrides */
+[data-theme="dark"] .docs-editor-content .w-md-editor {
+  --color-fg-default: var(--text-primary);
+  --color-canvas-default: var(--bg-surface);
+  --color-canvas-subtle: var(--bg-secondary);
+  --color-border-default: var(--line-soft);
+  --color-border-muted: var(--line-soft);
+  background-color: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .docs-editor-content .w-md-editor-toolbar {
+  background: var(--bg-secondary) !important;
+  border-bottom-color: var(--line-soft) !important;
+}
+
+[data-theme="dark"] .docs-editor-content .w-md-editor-toolbar li > button {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .docs-editor-content .w-md-editor-toolbar li > button:hover {
+  color: var(--accent-primary);
+  background: var(--accent-soft);
+}
+
+[data-theme="dark"] .docs-editor-content .wmde-markdown {
+  color: var(--text-primary);
+  background: var(--bg-surface);
+}
+
+[data-theme="dark"] .docs-editor-content .w-md-editor:focus-within {
+  box-shadow: 0 0 0 2px rgba(232, 149, 111, 0.2);
 }
 
 /* =====================
@@ -2320,14 +2582,6 @@ button.doc-item {
   .node-detail-panel {
     position: static;
     width: 100%;
-  }
-
-  .docs-preview-meta {
-    grid-template-columns: repeat(2, minmax(90px, 1fr));
-  }
-
-  .docs-preview-actions {
-    justify-content: stretch;
   }
 
   .docs-action-button {

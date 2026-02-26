@@ -54,19 +54,24 @@ export class DocumentPipeline {
     this.eventEmitter.on("status", listener);
   }
 
-  async process(document: Document, fileBuffer: Buffer): Promise<DocumentPipelineResult> {
+  async process(
+    document: Document,
+    fileBuffer: Buffer,
+    options?: { rawText?: string; forceRebuild?: boolean }
+  ): Promise<DocumentPipelineResult> {
+    const forceRebuild = options?.forceRebuild ?? false;
     try {
       this.emitStatus(document.id, "parsing", 0);
-      const rawText = await this.parseFile(document.fileType, fileBuffer);
+      const rawText = options?.rawText ?? await this.parseFile(document.fileType, fileBuffer);
 
       this.emitStatus(document.id, "chunking", 20);
-      const chunks = await this.loadOrCreateChunks(document.id, rawText);
+      const chunks = await this.loadOrCreateChunks(document.id, rawText, forceRebuild);
 
       const estimatedTokens = this.estimateTotalTokens(chunks);
       this.guardDocumentSize(chunks.length, estimatedTokens);
 
       this.emitStatus(document.id, "extracting", 30);
-      const extractions = await this.loadOrExtract(document.id, chunks);
+      const extractions = await this.loadOrExtract(document.id, chunks, forceRebuild);
 
       this.emitStatus(document.id, "resolving", 70);
       const resolvedGraph = this.entityResolver.resolve(extractions, document.id);
@@ -111,11 +116,13 @@ export class DocumentPipeline {
     }
   }
 
-  private async loadOrCreateChunks(documentId: string, text: string): Promise<DocumentChunk[]> {
+  private async loadOrCreateChunks(documentId: string, text: string, forceRebuild = false): Promise<DocumentChunk[]> {
     const cachePath = this.getChunksCachePath(documentId);
-    const cached = await this.readJsonFile<DocumentChunk[]>(cachePath);
-    if (cached && cached.length > 0) {
-      return cached;
+    if (!forceRebuild) {
+      const cached = await this.readJsonFile<DocumentChunk[]>(cachePath);
+      if (cached && cached.length > 0) {
+        return cached;
+      }
     }
 
     const splitter = new RecursiveCharacterTextSplitter({
@@ -161,9 +168,9 @@ export class DocumentPipeline {
     }
   }
 
-  private async loadOrExtract(documentId: string, chunks: DocumentChunk[]): Promise<ChunkExtractionResult[]> {
+  private async loadOrExtract(documentId: string, chunks: DocumentChunk[], forceRebuild = false): Promise<ChunkExtractionResult[]> {
     const cachePath = this.getExtractionsCachePath(documentId);
-    const cached = (await this.readJsonFile<ChunkExtractionResult[]>(cachePath)) ?? [];
+    const cached = forceRebuild ? [] : ((await this.readJsonFile<ChunkExtractionResult[]>(cachePath)) ?? []);
     const extractionMap = new Map<string, ChunkExtractionResult>(cached.map((item) => [item.chunkId, item]));
 
     const pending = chunks.filter((chunk) => !extractionMap.has(chunk.id));

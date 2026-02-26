@@ -11,11 +11,13 @@ import type {
   Document,
   DocumentStatus,
   DocumentStatusResponse,
+  GetDocumentContentResponse,
   GetDocumentResponse,
   ListDocumentsResponse,
   ReparseDocumentResponse,
   UploadDocumentResponse
 } from "@graphen/shared";
+import { DocumentContentStore } from "../services/DocumentContentStore.js";
 import { appConfig } from "../config.js";
 import { validate } from "../middleware/validator.js";
 import { validateUploadedFile } from "../parsers/fileValidator.js";
@@ -58,6 +60,12 @@ const listDocumentsQuerySchema = z.object({
 
 const reparseParamsSchema = z.object({
   id: z.string().min(1)
+});
+
+const MAX_EDITABLE_CHARS = 200_000;
+
+const reparseBodySchema = z.object({
+  content: z.string().max(MAX_EDITABLE_CHARS).optional()
 });
 
 interface DocumentStatusSnapshot {
@@ -126,6 +134,7 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
     (options.store ? () => store.connect() : () => ensureGraphStoreConnected(store));
   const uploadsDir = resolve(options.uploadsDir ?? "data/uploads");
   const cacheDir = resolve(options.cacheDir ?? appConfig.CACHE_DIR);
+  const contentStore = new DocumentContentStore({ uploadsDir });
 
   const statusSnapshots = new Map<string, DocumentStatusSnapshot>();
   const jobs = new Map<string, Promise<void>>();
@@ -179,14 +188,18 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
     return snapshot;
   };
 
-  const runPipelineInBackground = (document: Document, fileBuffer: Buffer): void => {
+  const runPipelineInBackground = (
+    document: Document,
+    fileBuffer: Buffer,
+    pipelineOptions?: { rawText?: string; forceRebuild?: boolean }
+  ): void => {
     if (jobs.has(document.id)) {
       return;
     }
 
     const task = (async () => {
       try {
-        await pipeline.process(document, fileBuffer);
+        await pipeline.process(document, fileBuffer, pipelineOptions);
 
         const latest = await getDocumentById(document.id);
         if (latest) {
@@ -333,6 +346,7 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
 
     const response: UploadDocumentResponse = {
       message: "File upload accepted",
+      documentId,
       file: {
         originalName: req.file.originalname,
         mimeType: validatedFile.mimeType,
@@ -395,6 +409,51 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
 
       const response: GetDocumentResponse = { document };
       return res.json(response);
+    }
+  );
+
+  documentsRouter.get(
+    "/:id/content",
+    validate({ params: documentParamsSchema }),
+    async (req, res) => {
+      try {
+        await ensureStoreConnected();
+      } catch (error) {
+        logger.error({ err: error }, "Graph store connection failed");
+        return res.status(503).json({ error: "Graph store unavailable" });
+      }
+
+      const documentId = req.params.id ?? "";
+      const document = await getDocumentById(documentId);
+      if (!document) {
+        return res.status(404).json({ error: "Document not found" });
+      }
+
+      const documentUploadDir = resolve(uploadsDir, documentId);
+      let fileName: string | null = null;
+      try {
+        const entries = await readdir(documentUploadDir, { withFileTypes: true });
+        fileName = entries.find((e) => e.isFile() && !e.name.startsWith("."))?.name ?? null;
+      } catch {
+        fileName = null;
+      }
+
+      if (!fileName) {
+        return res.status(404).json({
+          error: "Original uploaded file not found. Please upload the document again."
+        });
+      }
+
+      try {
+        const response: GetDocumentContentResponse = await contentStore.getContent(documentId, {
+          filePath: resolve(documentUploadDir, fileName),
+          fileType: document.fileType,
+        });
+        return res.json(response);
+      } catch (error) {
+        logger.error({ documentId, err: error }, "Failed to load document content");
+        return res.status(500).json({ error: "Failed to load document content" });
+      }
     }
   );
 
@@ -506,6 +565,21 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
         });
       }
 
+      // Validate body
+      const bodyResult = reparseBodySchema.safeParse(req.body);
+      if (!bodyResult.success) {
+        const firstIssue = bodyResult.error.issues[0];
+        // content exceeds MAX_EDITABLE_CHARS → 413
+        if (firstIssue?.code === "too_big") {
+          return res.status(413).json({
+            error: `Content exceeds maximum editable length of ${MAX_EDITABLE_CHARS} characters`
+          });
+        }
+        return res.status(400).json({ error: "Invalid request body", details: bodyResult.error.issues });
+      }
+
+      const { content } = bodyResult.data;
+
       const existing = await getDocumentById(documentId);
       if (!existing) {
         return res.status(404).json({ error: "Document not found" });
@@ -515,7 +589,7 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
       let fileName: string | null = null;
       try {
         const entries = await readdir(documentUploadDir, { withFileTypes: true });
-        fileName = entries.find((entry) => entry.isFile())?.name ?? null;
+        fileName = entries.find((entry) => entry.isFile() && !entry.name.startsWith("."))?.name ?? null;
       } catch {
         fileName = null;
       }
@@ -528,6 +602,13 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
 
       const fileBuffer = await readFile(resolve(documentUploadDir, fileName));
       await rm(resolve(cacheDir, documentId), { recursive: true, force: true });
+
+      // If content provided, write sidecar and pass rawText + forceRebuild to pipeline
+      let pipelineOptions: { rawText?: string; forceRebuild?: boolean } | undefined;
+      if (content !== undefined) {
+        await contentStore.writeSidecar(documentId, content);
+        pipelineOptions = { rawText: content, forceRebuild: true };
+      }
 
       const reparseDocument: Document = {
         id: existing.id,
@@ -546,7 +627,7 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
         progress: 0,
         updatedAt: new Date().toISOString()
       });
-      runPipelineInBackground(reparseDocument, fileBuffer);
+      runPipelineInBackground(reparseDocument, fileBuffer, pipelineOptions);
 
       const response: ReparseDocumentResponse = {
         message: "Reparse job queued",

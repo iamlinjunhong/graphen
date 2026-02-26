@@ -26,6 +26,20 @@ export interface Document {
   errorMessage?: string;
 }
 
+export interface GetDocumentContentResponse {
+  documentId: string;
+  content: string;
+  fileType: DocumentFileType;
+  charCount: number;
+  totalCharCount: number;
+  truncated: boolean;
+  contentSource: "parsed" | "edited";
+}
+
+export interface ReparseDocumentRequest {
+  content?: string;
+}
+
 export interface DocumentChunk {
   id: string;
   documentId: string;

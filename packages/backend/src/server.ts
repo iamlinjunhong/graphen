@@ -15,7 +15,8 @@ export const app = express();
 app.use(requestLogger);
 app.use(
   cors({
-    origin: appConfig.CORS_ORIGIN
+    origin: appConfig.CORS_ORIGIN,
+    exposedHeaders: ["x-document-id", "x-total-count", "x-page", "x-page-size"]
   })
 );
 app.use(express.json({ limit: "2mb" }));
