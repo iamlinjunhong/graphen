@@ -2,9 +2,26 @@ import { FileText, FileType2, File, Search, Plus } from "lucide-react";
 import type { Document, DocumentStatus } from "@graphen/shared";
 import { DocumentStatusBadge } from "./DocumentStatusBadge";
 
+const PROCESSING_STATUSES = new Set<DocumentStatus>([
+  "uploading",
+  "parsing",
+  "extracting",
+  "embedding"
+]);
+
+const STATUS_PROGRESS_FALLBACK: Record<DocumentStatus, number> = {
+  uploading: 10,
+  parsing: 35,
+  extracting: 65,
+  embedding: 88,
+  completed: 100,
+  error: 100
+};
+
 interface DocumentSidebarProps {
   documents: Document[];
   selectedDocumentId: string | null;
+  progressByDocumentId: Record<string, number>;
   query: string;
   status?: DocumentStatus | undefined;
   isLoading?: boolean;
@@ -39,6 +56,7 @@ function getFileIcon(filename: string) {
 export function DocumentSidebar({
   documents,
   selectedDocumentId,
+  progressByDocumentId,
   query,
   status,
   isLoading,
@@ -50,7 +68,7 @@ export function DocumentSidebar({
   return (
     <aside className="side-panel docs-sidebar">
 
-      {/* Title — standalone row */}
+      {/* Title */}
       <div className="side-panel-header" style={{ paddingBottom: "0.5rem" }}>
         <h2
           className="side-panel-title"
@@ -66,7 +84,7 @@ export function DocumentSidebar({
         </h2>
       </div>
 
-      {/* Search + Upload button — same row (matches chat sidebar pattern) */}
+      {/* Search + Upload button */}
       <div className="side-search-row" style={{ paddingTop: "0" }}>
         <div className="side-search-wrap">
           <span className="search-icon">
@@ -116,25 +134,46 @@ export function DocumentSidebar({
 
       {/* Document list */}
       <div className="docs-list" role="list" aria-label="Documents">
-        {documents.map((document) => (
-          <button
-            key={document.id}
-            type="button"
-            className={`doc-list-item${document.id === selectedDocumentId ? " is-selected" : ""}`}
-            onClick={() => onSelect(document.id)}
-          >
-            <div className="doc-list-icon">
-              {getFileIcon(document.filename)}
-            </div>
-            <div className="doc-list-info">
-              <span className="doc-list-name">{document.filename}</span>
-              <div className="doc-list-meta">
-                <span>{formatBytes(document.fileSize)}</span>
-                <DocumentStatusBadge status={document.status} />
+        {documents.map((document) => {
+          const isProcessing = PROCESSING_STATUSES.has(document.status);
+          const progress = progressByDocumentId[document.id]
+            ?? STATUS_PROGRESS_FALLBACK[document.status]
+            ?? 0;
+
+          return (
+            <button
+              key={document.id}
+              type="button"
+              className={`doc-list-item${document.id === selectedDocumentId ? " is-selected" : ""}`}
+              onClick={() => onSelect(document.id)}
+            >
+              <div className="doc-list-icon">
+                {getFileIcon(document.filename)}
               </div>
-            </div>
-          </button>
-        ))}
+              <div className="doc-list-info">
+                <span className="doc-list-name">{document.filename}</span>
+                <div className="doc-list-meta">
+                  <span>{formatBytes(document.fileSize)}</span>
+                  <DocumentStatusBadge status={document.status} />
+                </div>
+                {isProcessing ? (
+                  <div
+                    className="doc-item-progress-track"
+                    role="progressbar"
+                    aria-valuenow={progress}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                  >
+                    <div
+                      className="doc-item-progress-fill"
+                      style={{ width: `${Math.max(0, Math.min(100, progress))}%` }}
+                    />
+                  </div>
+                ) : null}
+              </div>
+            </button>
+          );
+        })}
 
         {documents.length === 0 ? (
           <p className="muted docs-empty">

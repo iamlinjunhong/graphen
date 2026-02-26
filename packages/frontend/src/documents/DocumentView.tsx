@@ -5,7 +5,6 @@ import { apiClient } from "../services/api";
 import { useDocumentStore } from "../stores/useDocumentStore";
 import { DocumentPreview } from "./DocumentPreview";
 import { DocumentSidebar } from "./DocumentSidebar";
-import { ParseConsole, type ParseLogEntry } from "./ParseConsole";
 import { UploadArea } from "./UploadArea";
 
 interface StatusStreamPayload {
@@ -15,6 +14,8 @@ interface StatusStreamPayload {
   progress?: number;
   message?: string;
   updatedAt: string;
+  chunkCount?: number;
+  entityCount?: number;
 }
 
 const PROCESSING_STATUSES = new Set<DocumentStatus>([
@@ -40,10 +41,6 @@ function parseJson<T>(value: string): T | null {
   } catch {
     return null;
   }
-}
-
-function makeLogId(): string {
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function inferFileType(filename: string): Document["fileType"] {
@@ -105,30 +102,8 @@ export function DocumentView() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [isReparsing, setIsReparsing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [logsByDocumentId, setLogsByDocumentId] = useState<Record<string, ParseLogEntry[]>>({});
   const [progressByDocumentId, setProgressByDocumentId] = useState<Record<string, number>>({});
   const [previewByDocumentId, setPreviewByDocumentId] = useState<Record<string, string>>({});
-
-  const appendLog = useCallback((
-    documentId: string,
-    entry: Omit<ParseLogEntry, "id" | "time"> & { time?: Date }
-  ) => {
-    setLogsByDocumentId((current) => {
-      const previous = current[documentId] ?? [];
-      const nextLog: ParseLogEntry = {
-        id: makeLogId(),
-        level: entry.level,
-        message: entry.message,
-        time: entry.time ?? new Date()
-      };
-
-      const next = [...previous, nextLog].slice(-120);
-      return {
-        ...current,
-        [documentId]: next
-      };
-    });
-  }, []);
 
   const refreshDocuments = useCallback(async (signal?: AbortSignal) => {
     setIsLoading(true);
@@ -190,14 +165,32 @@ export function DocumentView() {
     });
   }, [documents, filters.query, filters.status]);
 
-  const selectedLogs = selectedDocumentId ? (logsByDocumentId[selectedDocumentId] ?? []) : [];
-  const selectedProgress = selectedDocumentId
-    ? (progressByDocumentId[selectedDocumentId] ?? (selectedDocument ? STATUS_PROGRESS_FALLBACK[selectedDocument.status] : 0))
-    : 0;
   const selectedPreview = selectedDocumentId
     ? (previewByDocumentId[selectedDocumentId] ?? null)
     : null;
   const selectedDocumentStatus = selectedDocument?.status;
+
+  // Fetch preview from backend when selecting a completed document
+  useEffect(() => {
+    if (!selectedDocumentId || !selectedDocumentStatus) return;
+    if (selectedDocumentStatus !== "completed") return;
+    if (previewByDocumentId[selectedDocumentId]) return;
+
+    const controller = new AbortController();
+    apiClient.documents
+      .getPreview(selectedDocumentId, controller.signal)
+      .then((preview) => {
+        setPreviewByDocumentId((current) => ({
+          ...current,
+          [selectedDocumentId]: preview
+        }));
+      })
+      .catch((error) => {
+        if (error instanceof Error && error.name === "AbortError") return;
+      });
+
+    return () => controller.abort();
+  }, [selectedDocumentId, selectedDocumentStatus, previewByDocumentId]);
 
   const handleUpload = useCallback(async (file: File) => {
     const uploadId = globalThis.crypto.randomUUID();
@@ -239,13 +232,14 @@ export function DocumentView() {
         ...current,
         [documentId]: 10
       }));
-      appendLog(documentId, {
-        level: "info",
-        message: "Upload accepted. Waiting for parsing pipeline..."
-      });
 
       removeUpload(uploadId);
       await refreshDocuments();
+
+      const latestDoc = useDocumentStore.getState().documents.find((d) => d.id === documentId);
+      if (latestDoc && latestDoc.status === "error") {
+        setProgressByDocumentId((current) => ({ ...current, [documentId]: 100 }));
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Upload failed";
       setError(message);
@@ -259,10 +253,10 @@ export function DocumentView() {
     } finally {
       setUploading(false);
     }
-  }, [appendLog, refreshDocuments, removeUpload, setSelectedDocumentId, setUploading, upsertDocument, upsertUpload]);
+  }, [refreshDocuments, removeUpload, setSelectedDocumentId, setUploading, upsertDocument, upsertUpload]);
 
   const handleDelete = useCallback(async (document: Document) => {
-    const confirmed = window.confirm(`Delete document \"${document.filename}\"? This action cannot be undone.`);
+    const confirmed = window.confirm(`Delete document "${document.filename}"? This action cannot be undone.`);
     if (!confirmed) {
       return;
     }
@@ -274,10 +268,6 @@ export function DocumentView() {
       await apiClient.documents.delete(document.id);
       removeDocument(document.id);
 
-      setLogsByDocumentId((current) => {
-        const { [document.id]: _removed, ...rest } = current;
-        return rest;
-      });
       setProgressByDocumentId((current) => {
         const { [document.id]: _removed, ...rest } = current;
         return rest;
@@ -315,10 +305,6 @@ export function DocumentView() {
         ...current,
         [document.id]: STATUS_PROGRESS_FALLBACK.uploading
       }));
-      appendLog(document.id, {
-        level: "info",
-        message: "Reparse job queued."
-      });
       await refreshDocuments();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to reparse document";
@@ -326,7 +312,7 @@ export function DocumentView() {
     } finally {
       setIsReparsing(false);
     }
-  }, [appendLog, refreshDocuments, upsertDocument]);
+  }, [refreshDocuments, upsertDocument]);
 
   const handleStatusEvent = useCallback((rawData: string) => {
     const payload = parseJson<StatusStreamPayload>(rawData);
@@ -340,22 +326,23 @@ export function DocumentView() {
       [payload.id]: progress
     }));
 
-    const baseMessage = payload.message ?? `Status -> ${payload.status}`;
-    const phasePrefix = payload.phase ? `[${payload.phase}] ` : "";
-    appendLog(payload.id, {
-      level: payload.status === "error" ? "error" : payload.status === "completed" ? "success" : "info",
-      message: `${phasePrefix}${baseMessage}`,
-      time: new Date(payload.updatedAt)
-    });
-
     if (payload.status !== "pending") {
       const current = useDocumentStore
         .getState()
         .documents.find((document) => document.id === payload.id);
       if (current) {
+        const updatedMetadata = { ...current.metadata };
+        if (payload.chunkCount !== undefined) {
+          updatedMetadata.chunkCount = payload.chunkCount;
+        }
+        if (payload.entityCount !== undefined) {
+          updatedMetadata.entityCount = payload.entityCount;
+        }
+
         upsertDocument({
           ...current,
-          status: payload.status
+          status: payload.status,
+          metadata: updatedMetadata
         });
       }
     }
@@ -363,7 +350,7 @@ export function DocumentView() {
     if (payload.status === "completed" || payload.status === "error") {
       void refreshDocuments();
     }
-  }, [appendLog, refreshDocuments, upsertDocument]);
+  }, [refreshDocuments, upsertDocument]);
 
   useEffect(() => {
     if (!selectedDocumentId || !selectedDocumentStatus) {
@@ -386,17 +373,32 @@ export function DocumentView() {
       },
       onError: (streamError) => {
         setError(streamError.message);
+        void refreshDocuments();
+      },
+      onClose: () => {
+        void refreshDocuments();
       }
     });
 
     return stopStatusStream;
-  }, [handleStatusEvent, selectedDocumentId, selectedDocumentStatus, startStatusStream, stopStatusStream]);
+  }, [handleStatusEvent, refreshDocuments, selectedDocumentId, selectedDocumentStatus, startStatusStream, stopStatusStream]);
 
-  const currentStatus: DocumentStatus | "pending" = selectedDocument?.status ?? "pending";
+  // Polling fallback: if the selected document is still processing but SSE is
+  // not connected, periodically refresh so we don't get stuck on a stale status.
+  useEffect(() => {
+    if (!selectedDocumentId || !selectedDocumentStatus) return;
+    if (!PROCESSING_STATUSES.has(selectedDocumentStatus)) return;
+    if (isStatusConnected || isStatusConnecting) return;
+
+    const timer = setInterval(() => {
+      void refreshDocuments();
+    }, 3000);
+
+    return () => clearInterval(timer);
+  }, [isStatusConnected, isStatusConnecting, refreshDocuments, selectedDocumentId, selectedDocumentStatus]);
 
   return (
     <section className="page-shell">
-      {/* Hidden file input, triggered by sidebar + button */}
       <input
         ref={fileInputRef}
         type="file"
@@ -415,6 +417,7 @@ export function DocumentView() {
         <DocumentSidebar
           documents={filteredDocuments}
           selectedDocumentId={selectedDocumentId}
+          progressByDocumentId={progressByDocumentId}
           query={filters.query}
           status={filters.status}
           isLoading={isLoading}
@@ -424,18 +427,11 @@ export function DocumentView() {
           onUploadClick={() => fileInputRef.current?.click()}
         />
 
-        <div className="stack docs-right-column">
-          {/* Upload progress items (no drag zone, just progress list) */}
+        <div className="docs-right-column">
           {uploads.length > 0 ? (
             <UploadArea isUploading={isUploading} uploads={uploads} onUpload={handleUpload} />
           ) : null}
 
-          <ParseConsole
-            status={currentStatus}
-            progress={selectedProgress}
-            logs={selectedLogs}
-            isStreaming={isStatusConnecting || isStatusConnected}
-          />
           <DocumentPreview
             document={selectedDocument}
             previewText={selectedPreview}

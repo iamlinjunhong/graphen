@@ -18,7 +18,9 @@ export function isNeo4jConfigured(): boolean {
 }
 
 export function isLlmConfigured(): boolean {
-  return appConfig.QWEN_API_KEY.trim().length > 0;
+  return appConfig.LLM_PROVIDER === "gemini"
+    ? appConfig.GEMINI_API_KEY.trim().length > 0
+    : appConfig.QWEN_API_KEY.trim().length > 0;
 }
 
 interface Neo4jConnectionOptions {

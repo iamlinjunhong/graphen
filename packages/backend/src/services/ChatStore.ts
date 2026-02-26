@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import Database from "better-sqlite3";
-import type { ChatMessage, ChatRole, ChatSession, ChatSource } from "@graphen/shared";
+import type { ChatMessage, ChatRole, ChatSession, ChatSource, InferredRelation, SourcePath } from "@graphen/shared";
 
 export interface ChatStoreOptions {
   dbPath?: string;
@@ -20,6 +20,8 @@ export interface ChatStoreLike {
     content: string;
     sources?: ChatSource[];
     graphContext?: { nodes: string[]; edges: string[] };
+    sourcePaths?: SourcePath[];
+    inferredRelations?: InferredRelation[];
     id?: string;
   }): ChatMessage;
   listMessagesBySession(sessionId: string): ChatMessage[];
@@ -40,6 +42,8 @@ interface ChatMessageRow {
   content: string;
   sources_json: string | null;
   graph_context_json: string | null;
+  source_paths_json: string | null;
+  inferred_relations_json: string | null;
   created_at: string;
 }
 
@@ -132,6 +136,8 @@ export class ChatStore implements ChatStoreLike {
     content: string;
     sources?: ChatSource[];
     graphContext?: { nodes: string[]; edges: string[] };
+    sourcePaths?: SourcePath[];
+    inferredRelations?: InferredRelation[];
     id?: string;
   }): ChatMessage {
     const sessionExists = this.getSessionById(input.sessionId);
@@ -152,9 +158,11 @@ export class ChatStore implements ChatStoreLike {
           content,
           sources_json,
           graph_context_json,
+          source_paths_json,
+          inferred_relations_json,
           created_at
         )
-        VALUES (@id, @session_id, @role, @content, @sources_json, @graph_context_json, @created_at)
+        VALUES (@id, @session_id, @role, @content, @sources_json, @graph_context_json, @source_paths_json, @inferred_relations_json, @created_at)
         `
       )
       .run({
@@ -164,6 +172,8 @@ export class ChatStore implements ChatStoreLike {
         content: input.content,
         sources_json: input.sources ? JSON.stringify(input.sources) : null,
         graph_context_json: input.graphContext ? JSON.stringify(input.graphContext) : null,
+        source_paths_json: input.sourcePaths && input.sourcePaths.length > 0 ? JSON.stringify(input.sourcePaths) : null,
+        inferred_relations_json: input.inferredRelations && input.inferredRelations.length > 0 ? JSON.stringify(input.inferredRelations) : null,
         created_at: now
       });
 
@@ -180,7 +190,7 @@ export class ChatStore implements ChatStoreLike {
     const row = this.db
       .prepare(
         `
-        SELECT id, session_id, role, content, sources_json, graph_context_json, created_at
+        SELECT id, session_id, role, content, sources_json, graph_context_json, source_paths_json, inferred_relations_json, created_at
         FROM chat_messages
         WHERE id = ?
         LIMIT 1
@@ -195,7 +205,7 @@ export class ChatStore implements ChatStoreLike {
     const rows = this.db
       .prepare(
         `
-        SELECT id, session_id, role, content, sources_json, graph_context_json, created_at
+        SELECT id, session_id, role, content, sources_json, graph_context_json, source_paths_json, inferred_relations_json, created_at
         FROM chat_messages
         WHERE session_id = ?
         ORDER BY created_at ASC
@@ -241,6 +251,20 @@ export class ChatStore implements ChatStoreLike {
       CREATE INDEX IF NOT EXISTS idx_chat_sessions_updated_at
         ON chat_sessions(updated_at DESC);
     `);
+
+    // Migration: add source_paths_json column if not present
+    const columns = this.db
+      .prepare("PRAGMA table_info(chat_messages)")
+      .all() as Array<{ name: string }>;
+    const hasSourcePaths = columns.some((col) => col.name === "source_paths_json");
+    if (!hasSourcePaths) {
+      this.db.exec("ALTER TABLE chat_messages ADD COLUMN source_paths_json TEXT");
+    }
+
+    const hasInferredRelations = columns.some((col) => col.name === "inferred_relations_json");
+    if (!hasInferredRelations) {
+      this.db.exec("ALTER TABLE chat_messages ADD COLUMN inferred_relations_json TEXT");
+    }
   }
 
   private mapSessionRow(row: ChatSessionRow): ChatSession {
@@ -271,6 +295,16 @@ export class ChatStore implements ChatStoreLike {
     );
     if (graphContext) {
       message.graphContext = graphContext;
+    }
+
+    const sourcePaths = this.parseOptionalJson<SourcePath[]>(row.source_paths_json);
+    if (sourcePaths) {
+      message.sourcePaths = sourcePaths;
+    }
+
+    const inferredRelations = this.parseOptionalJson<InferredRelation[]>(row.inferred_relations_json);
+    if (inferredRelations) {
+      message.inferredRelations = inferredRelations;
     }
 
     return message;

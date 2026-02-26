@@ -23,8 +23,10 @@ import type {
 import type {
   ChatSessionDetailResponse,
   GetDocumentResponse,
+  GraphExportResponse,
   GraphNodeResponse,
   GraphNodesResponse,
+  GraphQualityResponse,
   GraphSearchResponse,
   ListDocumentsResponse,
   ReparseDocumentResponse,
@@ -379,6 +381,14 @@ export const apiClient = {
 
     statusStreamUrl(id: string): string {
       return `${API_BASE_URL}/documents/${id}/status?stream=true`;
+    },
+
+    async getPreview(id: string, signal?: AbortSignal): Promise<string> {
+      const result = await request<{ documentId: string; preview: string }>(
+        `/documents/${id}/preview`,
+        { signal }
+      );
+      return result.data.preview;
     }
   },
 
@@ -505,6 +515,22 @@ export const apiClient = {
           node: parseGraphNode(item.node as RawGraphNode)
         }))
       };
+    },
+
+    async getQuality(signal?: AbortSignal): Promise<GraphQualityResponse> {
+      const result = await request<GraphQualityResponse>("/graph/quality", { signal });
+      return result.data;
+    },
+
+    async exportGraph(
+      format: "jsonld" | "cypher" = "jsonld",
+      signal?: AbortSignal
+    ): Promise<GraphExportResponse> {
+      const result = await request<GraphExportResponse>("/graph/export", {
+        query: { format },
+        signal
+      });
+      return result.data;
     }
   },
 

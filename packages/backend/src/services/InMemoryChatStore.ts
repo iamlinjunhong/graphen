@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ChatMessage, ChatRole, ChatSession, ChatSource } from "@graphen/shared";
+import type { ChatMessage, ChatRole, ChatSession, ChatSource, InferredRelation, SourcePath } from "@graphen/shared";
 import type { ChatStoreLike } from "./ChatStore.js";
 
 export class InMemoryChatStore implements ChatStoreLike {
@@ -48,6 +48,8 @@ export class InMemoryChatStore implements ChatStoreLike {
     content: string;
     sources?: ChatSource[];
     graphContext?: { nodes: string[]; edges: string[] };
+    sourcePaths?: SourcePath[];
+    inferredRelations?: InferredRelation[];
     id?: string;
   }): ChatMessage {
     const session = this.sessions.get(input.sessionId);
@@ -67,6 +69,12 @@ export class InMemoryChatStore implements ChatStoreLike {
     }
     if (input.graphContext) {
       message.graphContext = input.graphContext;
+    }
+    if (input.sourcePaths && input.sourcePaths.length > 0) {
+      message.sourcePaths = input.sourcePaths;
+    }
+    if (input.inferredRelations && input.inferredRelations.length > 0) {
+      message.inferredRelations = input.inferredRelations;
     }
 
     const messages = this.sessionMessages.get(input.sessionId) ?? [];

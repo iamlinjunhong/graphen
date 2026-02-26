@@ -50,6 +50,8 @@ export interface LLMConfig {
   baseURL?: string;
   chatModel: string;
   embeddingModel: string;
+  embeddingApiKey?: string;
+  embeddingBaseURL?: string;
   temperature?: number;
   maxTokens?: number;
   maxConcurrent?: number;
@@ -90,6 +92,14 @@ export interface OpenAICompatibleClient {
   };
 }
 
+export interface InferredRelationRaw {
+  source: string;
+  target: string;
+  relation_type: string;
+  reasoning: string;
+  confidence: number;
+}
+
 export interface LLMServiceLike {
   extractEntitiesAndRelations(
     text: string,
@@ -103,5 +113,6 @@ export interface LLMServiceLike {
   ): AsyncGenerator<string>;
   generateEmbedding(text: string, options?: { documentId?: string }): Promise<number[]>;
   analyzeQuestion(question: string, options?: { documentId?: string }): Promise<QuestionAnalysis>;
+  inferRelations?(triples: string): Promise<InferredRelationRaw[]>;
   estimateTokens?(text: string): number;
 }

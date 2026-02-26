@@ -83,6 +83,11 @@ export function DocumentPreview({
       </div>
 
       <div className="docs-preview-content" aria-label="Document preview content">
+        {document.status === "error" && document.errorMessage ? (
+          <div className="docs-error-inline" style={{ marginBottom: 12, padding: "8px 12px", borderRadius: 6 }}>
+            处理失败：{document.errorMessage}
+          </div>
+        ) : null}
         {previewText && previewText.trim().length > 0 ? (
           <pre>{previewText}</pre>
         ) : (

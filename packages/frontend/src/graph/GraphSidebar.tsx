@@ -1,5 +1,6 @@
 import { Search } from "lucide-react";
 import type { GraphFilters } from "../stores/useGraphStore";
+import { getEntityTypeLabel, getEntityTypeColor } from "../utils/entityTypeLabels";
 
 interface DocumentFilterOption {
   id: string;
@@ -87,6 +88,20 @@ export function GraphSidebar({
         {/* Entity types */}
         <div className="graph-filter-group">
           <h4>Entity Types</h4>
+
+          {/* Color legend */}
+          <div className="graph-legend" role="list" aria-label="Entity type color legend">
+            {nodeTypes.map((nodeType) => (
+              <div key={nodeType} className="graph-legend-item" role="listitem">
+                <span
+                  className="graph-legend-swatch"
+                  style={{ backgroundColor: getEntityTypeColor(nodeType) }}
+                />
+                <span>{getEntityTypeLabel(nodeType)}</span>
+              </div>
+            ))}
+          </div>
+
           <div className="graph-filter-options">
             {nodeTypes.length === 0 ? (
               <p className="muted" style={{ fontSize: "0.85rem" }}>No node types</p>
@@ -98,7 +113,7 @@ export function GraphSidebar({
                     checked={isChecked(filters.nodeTypes, nodeType)}
                     onChange={() => onToggleNodeType(nodeType)}
                   />
-                  <span>{nodeType}</span>
+                  <span>{getEntityTypeLabel(nodeType)}</span>
                 </label>
               ))
             )}

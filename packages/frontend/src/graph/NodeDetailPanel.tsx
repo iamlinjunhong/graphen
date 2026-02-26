@@ -1,11 +1,14 @@
 import { AnimatePresence, motion } from "framer-motion";
-import type { GraphNode } from "@graphen/shared";
+import type { GraphNode, InferredRelation } from "@graphen/shared";
+import { getEntityTypeLabel } from "../utils/entityTypeLabels";
 
 interface NodeDetailPanelProps {
   node: GraphNode | null;
   degree: number;
   neighborNames: string[];
   isExpanding: boolean;
+  documentLabels: Map<string, string>;
+  inferredRelations?: InferredRelation[];
   onExpand: (node: GraphNode) => void;
   onClose: () => void;
   onFilterDocument: (documentId: string) => void;
@@ -16,6 +19,8 @@ export function NodeDetailPanel({
   degree,
   neighborNames,
   isExpanding,
+  documentLabels,
+  inferredRelations,
   onExpand,
   onClose,
   onFilterDocument
@@ -31,15 +36,17 @@ export function NodeDetailPanel({
           transition={{ duration: 0.2, ease: "easeOut" }}
         >
           <header>
-            <p className="page-kicker">Node Detail</p>
-            <h3>{node.name}</h3>
+            <div>
+              <p className="page-kicker">Node Detail</p>
+              <h3>{node.name}</h3>
+            </div>
             <button type="button" className="icon-button" onClick={onClose} aria-label="Close detail panel">
               ✕
             </button>
           </header>
 
           <section>
-            <span className="chip">{node.type}</span>
+            <span className="chip">{getEntityTypeLabel(node.type)}</span>
             <p>{node.description || "No description."}</p>
           </section>
 
@@ -71,7 +78,7 @@ export function NodeDetailPanel({
                     className="chip"
                     onClick={() => onFilterDocument(documentId)}
                   >
-                    {documentId}
+                    {documentLabels.get(documentId) ?? documentId}
                   </button>
                 ))
               )}
@@ -88,6 +95,24 @@ export function NodeDetailPanel({
               )}
             </div>
           </section>
+
+          {inferredRelations && inferredRelations.length > 0 ? (
+            <section>
+              <h4>推断关系</h4>
+              <div className="node-detail-inferred">
+                {inferredRelations.map((rel, idx) => (
+                  <div key={idx} className="node-inferred-item">
+                    <span className="node-inferred-triple">
+                      {rel.source} → <em>{rel.relationType}</em> → {rel.target}
+                    </span>
+                    <span className="node-inferred-meta">
+                      置信度 {rel.confidence.toFixed(2)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
 
           <footer>
             <button type="button" className="docs-action-button" disabled={isExpanding} onClick={() => onExpand(node)}>

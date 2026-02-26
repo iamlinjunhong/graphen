@@ -1,6 +1,8 @@
+import { useEffect, useRef } from "react";
 import { Zap } from "lucide-react";
 import type { ChatMessage, ChatSource } from "@graphen/shared";
 import { ChatSourceCard } from "./ChatSourceCard";
+import { ChatPathCard } from "./ChatPathCard";
 
 interface ChatMessagesProps {
   messages: ChatMessage[];
@@ -8,6 +10,7 @@ interface ChatMessagesProps {
   streamingMessage: string;
   onOpenDocument: (source: ChatSource) => void;
   onOpenGraph: (source: ChatSource) => void;
+  onGraphNodeClick: (nodeName: string) => void;
 }
 
 function formatMessageTime(date: Date): string {
@@ -22,8 +25,15 @@ export function ChatMessages({
   isStreaming,
   streamingMessage,
   onOpenDocument,
-  onOpenGraph
+  onOpenGraph,
+  onGraphNodeClick
 }: ChatMessagesProps) {
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages.length, isStreaming, streamingMessage]);
+
   return (
     <section className="chat-messages-panel" aria-label="Chat messages">
       <div className="chat-message-list">
@@ -64,6 +74,43 @@ export function ChatMessages({
                       ))}
                     </div>
                   ) : null}
+
+                  {/* Reasoning paths */}
+                  {isAssistant && message.sourcePaths && message.sourcePaths.length > 0 ? (
+                    <div className="chat-path-list" style={{ marginTop: "10px" }}>
+                      <small className="chat-path-list-label">推理路径</small>
+                      {message.sourcePaths.map((path, idx) => (
+                        <ChatPathCard
+                          key={`${message.id}:path:${idx}`}
+                          path={path}
+                          onNodeClick={onGraphNodeClick}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {/* Inferred relations (T18) */}
+                  {isAssistant && message.inferredRelations && message.inferredRelations.length > 0 ? (
+                    <div className="chat-inferred-list" style={{ marginTop: "10px" }}>
+                      <small className="chat-path-list-label">推断关系</small>
+                      {message.inferredRelations.map((rel, idx) => (
+                        <div key={`${message.id}:infer:${idx}`} className="chat-inferred-card">
+                          <span className="chat-inferred-triple">
+                            <button type="button" className="chat-path-node" onClick={() => onGraphNodeClick(rel.source)}>
+                              {rel.source}
+                            </button>
+                            <span className="chat-path-relation">--[{rel.relationType}]--&gt;</span>
+                            <button type="button" className="chat-path-node" onClick={() => onGraphNodeClick(rel.target)}>
+                              {rel.target}
+                            </button>
+                          </span>
+                          <span className="chat-inferred-meta">
+                            置信度 {rel.confidence.toFixed(2)} · {rel.reasoning}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
 
                 <small>{formatMessageTime(message.createdAt)}</small>
@@ -88,6 +135,8 @@ export function ChatMessages({
             </div>
           </article>
         ) : null}
+
+        <div ref={messagesEndRef} />
       </div>
     </section>
   );

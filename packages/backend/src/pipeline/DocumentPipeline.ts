@@ -71,6 +71,8 @@ export class DocumentPipeline {
       this.emitStatus(document.id, "resolving", 70);
       const resolvedGraph = this.entityResolver.resolve(extractions, document.id);
 
+      await this.reconcileWithExistingNodes(resolvedGraph);
+
       this.emitStatus(document.id, "embedding", 80);
       await this.generateEmbeddings(document.id, resolvedGraph, chunks);
 
@@ -243,6 +245,70 @@ export class DocumentPipeline {
 
     return savedDocument;
   }
+  /**
+   * Cross-document entity fusion: query Neo4j for existing nodes with the same
+   * canonical key (type:normalizedName). If found, remap the resolved node's ID
+   * to the existing one so that saveNodes (with ON MATCH append mode) merges
+   * sourceDocumentIds instead of creating a duplicate.
+   */
+  private async reconcileWithExistingNodes(graph: ResolvedGraph): Promise<void> {
+    if (graph.nodes.length === 0) {
+      return;
+    }
+
+    // Build canonical keys for all resolved nodes
+    const keyEntries = graph.nodes.map((node) => ({
+      canonicalKey: EntityResolver.buildCanonicalKey(node.type, node.name),
+      type: node.type.trim().toLowerCase(),
+      lowerName: node.name.trim().toLowerCase().replace(/\s+/g, " ")
+    }));
+
+    // Query the store — only if it supports findNodeIdsByCanonicalKeys
+    const storeAny = this.store as Record<string, unknown>;
+    if (typeof storeAny.findNodeIdsByCanonicalKeys !== "function") {
+      return;
+    }
+
+    const existingMap = await (
+      storeAny.findNodeIdsByCanonicalKeys as (
+        keys: Array<{ type: string; lowerName: string }>
+      ) => Promise<Map<string, string>>
+    )(keyEntries.map((e) => ({ type: e.type, lowerName: e.lowerName })));
+
+    if (existingMap.size === 0) {
+      return;
+    }
+
+    // Build old-id → new-id remap
+    const idRemap = new Map<string, string>();
+    for (let i = 0; i < graph.nodes.length; i++) {
+      const node = graph.nodes[i]!;
+      const key = keyEntries[i]!.canonicalKey;
+      const existingId = existingMap.get(key);
+      if (existingId && existingId !== node.id) {
+        idRemap.set(node.id, existingId);
+        node.id = existingId;
+      }
+    }
+
+    if (idRemap.size === 0) {
+      return;
+    }
+
+    // Remap edge references
+    for (const edge of graph.edges) {
+      const remappedSource = idRemap.get(edge.sourceNodeId);
+      if (remappedSource) {
+        edge.sourceNodeId = remappedSource;
+      }
+      const remappedTarget = idRemap.get(edge.targetNodeId);
+      if (remappedTarget) {
+        edge.targetNodeId = remappedTarget;
+      }
+    }
+  }
+
+
 
   private emitStatus(documentId: string, phase: PipelinePhase, progress: number, message?: string): void {
     const payload: PipelineStatusEvent = {

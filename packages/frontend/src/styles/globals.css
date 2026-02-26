@@ -579,10 +579,6 @@ button.chip {
   height: 100%;
 }
 
-.docs-sidebar {
-  min-height: 0;
-}
-
 .docs-sidebar-controls {
   display: grid;
   grid-template-columns: 1fr;
@@ -693,6 +689,23 @@ button.chip {
   color: var(--text-muted);
   display: flex;
   justify-content: space-between;
+}
+
+/* Inline progress bar inside sidebar document items */
+.doc-item-progress-track {
+  width: 100%;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(125, 129, 116, 0.14);
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.doc-item-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent-primary), #e09b66);
+  transition: width 0.3s ease;
 }
 
 /* Old selectors kept for compatibility */
@@ -912,6 +925,7 @@ button.doc-item {
 .docs-preview-panel {
   gap: 12px;
   padding: 16px;
+  flex: 1;
 }
 
 .docs-console-head,
@@ -1008,7 +1022,7 @@ button.doc-item {
   background: var(--bg-surface);
   padding: 12px;
   min-height: 120px;
-  max-height: 240px;
+  flex: 1;
   overflow: auto;
 }
 
@@ -1206,6 +1220,30 @@ button.doc-item {
   flex-shrink: 0;
 }
 
+/* Entity type color legend */
+.graph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-bottom: 8px;
+}
+
+.graph-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.graph-legend-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
 .graph-controls {
   display: flex;
   align-items: center;
@@ -1338,6 +1376,107 @@ button.doc-item {
   to { transform: rotate(360deg); }
 }
 
+/* T16: Quality panel */
+.graph-quality-panel {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 10;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 0;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  min-width: 180px;
+}
+
+[data-theme="dark"] .graph-quality-panel {
+  background: rgba(45, 45, 45, 0.95);
+}
+
+.graph-quality-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 10px 16px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.graph-quality-toggle:hover {
+  background: var(--bg-surface);
+}
+
+.graph-quality-arrow {
+  font-size: 0.75rem;
+}
+
+.graph-quality-body {
+  padding: 0 16px 12px;
+}
+
+.graph-quality-summary {
+  display: flex;
+  gap: 12px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.graph-quality-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.graph-quality-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+
+.graph-quality-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.severity-ok .graph-quality-dot { background: #4caf50; }
+.severity-warn .graph-quality-dot { background: #ff9800; }
+.severity-error .graph-quality-dot { background: #f44336; }
+
+.graph-quality-label {
+  flex: 1;
+  color: var(--text-secondary);
+}
+
+.graph-quality-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.graph-quality-loading,
+.graph-quality-error {
+  font-size: 0.8rem;
+  margin: 4px 0;
+}
+
+.graph-quality-error {
+  color: #f44336;
+}
+
 .node-detail-panel {
   width: 340px;
   max-width: 340px;
@@ -1358,16 +1497,20 @@ button.doc-item {
 }
 
 .node-detail-panel header {
-  display: grid;
-  grid-template-columns: 1fr auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
   gap: 8px;
-  align-items: start;
 }
 
 .node-detail-panel header h3 {
   margin: 2px 0 0;
   font-size: 1.1rem;
   color: var(--text-primary);
+}
+
+.node-detail-panel header .icon-button {
+  flex-shrink: 0;
 }
 
 .node-detail-panel section {
@@ -1817,6 +1960,149 @@ button.doc-item {
 .chat-source-card .docs-action-button {
   padding: 5px 9px;
   font-size: 12px;
+}
+
+/* Chat Path Cards */
+
+.chat-path-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-path-list-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 2px;
+}
+
+.chat-path-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: linear-gradient(155deg, #6366f110, #6366f104);
+  font-size: 12px;
+  line-height: 1.4;
+  flex-wrap: wrap;
+}
+
+.chat-path-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.chat-path-steps {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+.chat-path-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.chat-path-node {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 1px 3px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background 0.15s;
+}
+
+.chat-path-node:hover {
+  background: var(--accent-bg, rgba(99, 102, 241, 0.12));
+  text-decoration: underline;
+}
+
+.chat-path-relation {
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 0 2px;
+}
+
+.chat-path-relation::before {
+  content: "→ ";
+}
+
+.chat-path-relation::after {
+  content: " →";
+}
+
+/* T18: Inferred relations in chat */
+.chat-inferred-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-inferred-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 8px;
+  border: 1px dashed var(--line-soft);
+  border-radius: 8px;
+  background: linear-gradient(155deg, rgba(255, 152, 0, 0.06), rgba(255, 152, 0, 0.02));
+  font-size: 12px;
+}
+
+.chat-inferred-triple {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.chat-inferred-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* T18: Inferred relations in node detail */
+.node-detail-inferred {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.node-inferred-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px dashed var(--line-soft);
+  border-radius: 8px;
+  background: rgba(255, 152, 0, 0.05);
+  font-size: 12px;
+}
+
+.node-inferred-triple {
+  color: var(--text-primary);
+}
+
+.node-inferred-triple em {
+  color: var(--accent-primary);
+  font-style: normal;
+  font-weight: 500;
+}
+
+.node-inferred-meta {
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 /* =====================

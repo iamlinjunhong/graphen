@@ -4,13 +4,15 @@ import type { ChatMessage } from "@graphen/shared";
 import {
   QUESTION_ANALYSIS_SYSTEM_PROMPT,
   buildChatSystemPrompt,
-  buildExtractionSystemPrompt
+  buildExtractionSystemPrompt,
+  buildInferencePrompt
 } from "../prompts/index.js";
 import { appConfig } from "../config.js";
 import { LLMRateLimiter } from "./LLMRateLimiter.js";
 import type {
   ExtractionResult,
   ExtractionSchema,
+  InferredRelationRaw,
   LLMConfig,
   LLMServiceLike,
   OpenAICompatibleClient,
@@ -53,6 +55,18 @@ const questionAnalysisSchema = z.object({
   rewritten_query: z.string().default("")
 });
 
+const inferenceResultSchema = z.object({
+  inferred_relations: z.array(
+    z.object({
+      source: z.string().min(1),
+      target: z.string().min(1),
+      relation_type: z.string().min(1),
+      reasoning: z.string().default(""),
+      confidence: z.number().min(0).max(1)
+    })
+  ).default([])
+});
+
 const modelCostPerThousandTokens: Record<TokenUsagePhase, { input: number; output: number }> = {
   extraction: { input: 0.004, output: 0.012 },
   chat: { input: 0.004, output: 0.012 },
@@ -73,6 +87,7 @@ type NormalizedLLMConfig = LLMConfig & {
 
 export class LLMService implements LLMServiceLike {
   private readonly client: OpenAICompatibleClient;
+  private readonly embeddingClient: OpenAICompatibleClient;
   private readonly rateLimiter: LLMRateLimiter;
   private readonly usageRecords: TokenUsageRecord[] = [];
   private readonly config: NormalizedLLMConfig;
@@ -81,6 +96,7 @@ export class LLMService implements LLMServiceLike {
     config: LLMConfig,
     deps?: {
       client?: OpenAICompatibleClient;
+      embeddingClient?: OpenAICompatibleClient;
       rateLimiter?: LLMRateLimiter;
     }
   ) {
@@ -103,6 +119,18 @@ export class LLMService implements LLMServiceLike {
         baseURL: this.config.baseURL
       });
 
+    // Use a separate client for embeddings if configured
+    if (deps?.embeddingClient) {
+      this.embeddingClient = deps.embeddingClient;
+    } else if (config.embeddingApiKey && config.embeddingBaseURL) {
+      this.embeddingClient = new OpenAI({
+        apiKey: config.embeddingApiKey,
+        baseURL: config.embeddingBaseURL
+      });
+    } else {
+      this.embeddingClient = this.client;
+    }
+
     this.rateLimiter =
       deps?.rateLimiter ??
       new LLMRateLimiter({
@@ -115,11 +143,33 @@ export class LLMService implements LLMServiceLike {
   }
 
   static fromEnv(): LLMService {
-    return new LLMService({
-      apiKey: appConfig.QWEN_API_KEY,
-      baseURL: appConfig.QWEN_BASE_URL,
-      chatModel: appConfig.QWEN_CHAT_MODEL,
-      embeddingModel: appConfig.QWEN_EMBEDDING_MODEL,
+    const provider = appConfig.LLM_PROVIDER;
+
+    const config: LLMConfig = {
+      apiKey:
+        provider === "gemini"
+          ? appConfig.GEMINI_API_KEY
+          : provider === "openai"
+          ? appConfig.OPENAI_API_KEY
+          : appConfig.QWEN_API_KEY,
+      baseURL:
+        provider === "gemini"
+          ? appConfig.GEMINI_BASE_URL
+          : provider === "openai"
+          ? appConfig.OPENAI_BASE_URL
+          : appConfig.QWEN_BASE_URL,
+      chatModel:
+        provider === "gemini"
+          ? appConfig.GEMINI_CHAT_MODEL
+          : provider === "openai"
+          ? appConfig.OPENAI_CHAT_MODEL
+          : appConfig.QWEN_CHAT_MODEL,
+      embeddingModel:
+        provider === "gemini"
+          ? appConfig.GEMINI_EMBEDDING_MODEL
+          : provider === "openai"
+          ? appConfig.OPENAI_EMBEDDING_MODEL
+          : appConfig.QWEN_EMBEDDING_MODEL,
       maxConcurrent: appConfig.LLM_MAX_CONCURRENT,
       maxRetries: appConfig.LLM_MAX_RETRIES,
       retryDelayMs: appConfig.LLM_RETRY_DELAY_MS,
@@ -127,7 +177,16 @@ export class LLMService implements LLMServiceLike {
       timeoutMs: appConfig.LLM_TIMEOUT_MS,
       temperature: 0.1,
       maxTokens: 4096
-    });
+    };
+
+    if (appConfig.EMBEDDING_API_KEY) {
+      config.embeddingApiKey = appConfig.EMBEDDING_API_KEY;
+    }
+    if (appConfig.EMBEDDING_BASE_URL) {
+      config.embeddingBaseURL = appConfig.EMBEDDING_BASE_URL;
+    }
+
+    return new LLMService(config);
   }
 
   async extractEntitiesAndRelations(
@@ -193,10 +252,14 @@ export class LLMService implements LLMServiceLike {
   }
 
   async generateEmbedding(text: string, options?: { documentId?: string }): Promise<number[]> {
+    const isOpenAI = appConfig.LLM_PROVIDER === "openai";
+    const dimensions = appConfig.EMBEDDING_DIMENSIONS;
+
     const response = await this.rateLimiter.run(() =>
-      this.client.embeddings.create({
+      this.embeddingClient.embeddings.create({
         model: this.config.embeddingModel,
-        input: text
+        input: text,
+        ...(isOpenAI && dimensions ? { dimensions } : {})
       })
     );
 
@@ -227,6 +290,33 @@ export class LLMService implements LLMServiceLike {
   getUsageRecords(limit = 200): TokenUsageRecord[] {
     const safeLimit = Math.max(1, limit);
     return this.usageRecords.slice(-safeLimit);
+  }
+
+  async inferRelations(triples: string): Promise<InferredRelationRaw[]> {
+    if (triples.trim().length === 0) {
+      return [];
+    }
+
+    const prompt = buildInferencePrompt(triples);
+    const response = await this.rateLimiter.run(() =>
+      this.client.chat.completions.create({
+        model: this.config.chatModel,
+        temperature: 0.1,
+        max_tokens: 1500,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: prompt }
+        ]
+      })
+    );
+
+    const content = response?.choices?.[0]?.message?.content ?? "{}";
+    const parsed = inferenceResultSchema.parse(safeJsonParse(content));
+    this.recordUsage("analysis", this.config.chatModel, response?.usage);
+
+    return parsed.inferred_relations
+      .filter((r) => r.confidence >= 0.5)
+      .slice(0, 5);
   }
 
   clearUsageRecords(): void {

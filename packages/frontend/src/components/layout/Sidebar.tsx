@@ -15,8 +15,8 @@ interface SidebarProps {
 
 const navItems: NavigationItem[] = [
   { to: "/chat", label: "AI Chat", icon: MessageSquare },
-  { to: "/graph", label: "Graph Explorer", icon: Network },
-  { to: "/documents", label: "Data Upload", icon: CloudUpload }
+  { to: "/documents", label: "Data Upload", icon: CloudUpload },
+  { to: "/graph", label: "Graph Explorer", icon: Network }
 ];
 
 export function Sidebar({ collapsed = false }: SidebarProps) {

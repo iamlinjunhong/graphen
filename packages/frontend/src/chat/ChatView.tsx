@@ -237,7 +237,16 @@ export function ChatView() {
       if (!graphStore.filters.documentIds.includes(source.documentId)) {
         graphStore.toggleDocumentFilter(source.documentId);
       }
-      graphStore.setSearchQuery(source.documentName);
+      graphStore.setSearchQuery("");
+      navigate("/graph");
+    },
+    [navigate]
+  );
+
+  const handleGraphNodeClick = useCallback(
+    (nodeName: string) => {
+      const graphStore = useGraphStore.getState();
+      graphStore.setSearchQuery(nodeName);
       navigate("/graph");
     },
     [navigate]
@@ -293,6 +302,7 @@ export function ChatView() {
             streamingMessage={streamingMessage}
             onOpenDocument={handleOpenDocument}
             onOpenGraph={handleOpenGraph}
+            onGraphNodeClick={handleGraphNodeClick}
           />
 
           <div className="chat-input-wrap">

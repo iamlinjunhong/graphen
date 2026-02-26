@@ -10,6 +10,8 @@ import type {
   GraphNodeResponse,
   GraphNodesResponse,
   GraphOverviewResponse,
+  GraphQualityResponse,
+  GraphExportResponse,
   GraphSearchResponse,
   GraphSubgraphResponse,
   GraphVectorSearchResponse
@@ -369,6 +371,133 @@ export function createGraphRouter(options: CreateGraphRouterOptions = {}): Route
         results
       };
       return res.json(response);
+    }
+  );
+
+  // T16: Graph quality report
+  graphRouter.get("/quality", async (_req, res) => {
+    if (!(await ensureStoreReady(res))) {
+      return;
+    }
+
+    try {
+      // Access the Neo4j-specific method via type assertion
+      const neo4jStore = store as unknown as {
+        getQualityReport: () => Promise<GraphQualityResponse["report"]>;
+      };
+      if (typeof neo4jStore.getQualityReport !== "function") {
+        return res.status(501).json({ error: "Quality report not supported by current store" });
+      }
+      const report = await neo4jStore.getQualityReport();
+      const response: GraphQualityResponse = { report };
+      return res.json(response);
+    } catch (error) {
+      logger.error({ err: error }, "Failed to generate quality report");
+      return res.status(500).json({ error: "Failed to generate quality report" });
+    }
+  });
+
+  // T17: Graph export
+  const exportQuerySchema = z.object({
+    format: z.enum(["jsonld", "cypher"]).default("jsonld")
+  });
+
+  graphRouter.get(
+    "/export",
+    validate({ query: exportQuerySchema }),
+    async (req, res) => {
+      if (!(await ensureStoreReady(res))) {
+        return;
+      }
+
+      const { format } = req.query as unknown as z.infer<typeof exportQuerySchema>;
+
+      try {
+        const neo4jStore = store as unknown as {
+          exportAllNodesAndEdges: () => Promise<{
+            nodes: GraphNode[];
+            edges: Array<{
+              id: string;
+              sourceNodeId: string;
+              targetNodeId: string;
+              relationType: string;
+              description: string;
+              properties: Record<string, unknown>;
+              weight: number;
+              sourceDocumentIds: string[];
+              confidence: number;
+            }>;
+          }>;
+        };
+        if (typeof neo4jStore.exportAllNodesAndEdges !== "function") {
+          return res.status(501).json({ error: "Export not supported by current store" });
+        }
+
+        const { nodes, edges } = await neo4jStore.exportAllNodesAndEdges();
+        let data: string;
+
+        if (format === "cypher") {
+          const lines: string[] = [];
+          for (const node of nodes) {
+            const props = {
+              id: node.id,
+              name: node.name,
+              type: node.type,
+              description: node.description,
+              confidence: node.confidence
+            };
+            lines.push(
+              `MERGE (e:Entity {id: "${node.id}"}) SET e += ${JSON.stringify(props)};`
+            );
+          }
+          for (const edge of edges) {
+            lines.push(
+              `MATCH (s:Entity {id: "${edge.sourceNodeId}"}), (t:Entity {id: "${edge.targetNodeId}"}) ` +
+              `MERGE (s)-[r:RELATED_TO {id: "${edge.id}"}]->(t) ` +
+              `SET r.relationType = "${edge.relationType}", r.description = ${JSON.stringify(edge.description)}, r.weight = ${edge.weight}, r.confidence = ${edge.confidence};`
+            );
+          }
+          data = lines.join("\n");
+        } else {
+          // JSON-LD format
+          const jsonLd = {
+            "@context": {
+              "@vocab": "https://schema.org/",
+              "graphen": "https://graphen.local/ontology#",
+              "Entity": "graphen:Entity",
+              "relationType": "graphen:relationType"
+            },
+            "@graph": [
+              ...nodes.map((node) => ({
+                "@id": `graphen:entity:${node.id}`,
+                "@type": "Entity",
+                name: node.name,
+                "graphen:entityType": node.type,
+                description: node.description,
+                "graphen:confidence": node.confidence,
+                "graphen:sourceDocumentIds": node.sourceDocumentIds
+              })),
+              ...edges.map((edge) => ({
+                "@id": `graphen:edge:${edge.id}`,
+                "@type": "graphen:Relationship",
+                "graphen:source": `graphen:entity:${edge.sourceNodeId}`,
+                "graphen:target": `graphen:entity:${edge.targetNodeId}`,
+                "graphen:relationType": edge.relationType,
+                description: edge.description,
+                "graphen:weight": edge.weight,
+                "graphen:confidence": edge.confidence
+              }))
+            ]
+          };
+          data = JSON.stringify(jsonLd, null, 2);
+        }
+
+        const response: GraphExportResponse = { format, data };
+        return res.json(response);
+      } catch (error) {
+        logger.error({ err: error }, "Failed to export graph");
+        return res.status(500).json({ error: "Failed to export graph" });
+      }
     }
   );
 

@@ -63,6 +63,18 @@ export class EntityResolver {
 
     return { nodes, edges };
   }
+  /**
+     * Build a stable canonical key for cross-document entity deduplication.
+     * Format: `type:normalizedName` (lowercase, trimmed, collapsed whitespace, synonym-resolved).
+     */
+    static buildCanonicalKey(type: string, name: string): string {
+      const normalizedType = type.trim().toLowerCase();
+      let normalizedName = name.trim().toLowerCase().replace(/\s+/g, " ");
+      normalizedName = synonymMap[normalizedName] ?? normalizedName;
+      return `${normalizedType}:${normalizedName}`;
+    }
+
+
 
   private stageExactMatch(entities: WorkingEntity[]): WorkingEntity[] {
     const grouped = new Map<string, WorkingEntity>();

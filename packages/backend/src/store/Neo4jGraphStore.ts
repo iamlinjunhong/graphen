@@ -32,6 +32,8 @@ type AccessMode = "READ" | "WRITE";
 
 export class Neo4jGraphStore implements AbstractGraphStore {
   private driver: Driver | null = null;
+  private statsCache: { data: GraphStats; expiresAt: number } | null = null;
+  private static readonly STATS_TTL_MS = 30_000;
 
   constructor(private readonly config: Neo4jGraphStoreConfig) {}
 
@@ -89,33 +91,47 @@ export class Neo4jGraphStore implements AbstractGraphStore {
   }
 
   async saveNodes(nodes: GraphNode[]): Promise<void> {
-    if (nodes.length === 0) {
-      return;
-    }
+      if (nodes.length === 0) {
+        return;
+      }
 
-    await this.withSession("WRITE", async (session) => {
-      await session.run(
-        `
-        UNWIND $nodes AS node
-        MERGE (e:Entity {id: node.id})
-        SET
-          e.name = node.name,
-          e.type = node.type,
-          e.description = node.description,
-          e.properties = node.properties,
-          e.embedding = node.embedding,
-          e.sourceDocumentIds = node.sourceDocumentIds,
-          e.sourceChunkIds = node.sourceChunkIds,
-          e.confidence = node.confidence,
-          e.createdAt = coalesce(e.createdAt, node.createdAt),
-          e.updatedAt = node.updatedAt
-        `,
-        {
-          nodes: nodes.map((node) => this.serializeNode(node))
-        }
-      );
-    });
-  }
+      await this.withSession("WRITE", async (session) => {
+        await session.run(
+          `
+          UNWIND $nodes AS node
+          MERGE (e:Entity {id: node.id})
+          ON CREATE SET
+            e.name = node.name,
+            e.type = node.type,
+            e.description = node.description,
+            e.properties = node.properties,
+            e.embedding = node.embedding,
+            e.sourceDocumentIds = node.sourceDocumentIds,
+            e.sourceChunkIds = node.sourceChunkIds,
+            e.confidence = node.confidence,
+            e.createdAt = node.createdAt,
+            e.updatedAt = node.updatedAt
+          ON MATCH SET
+            e.name = node.name,
+            e.type = node.type,
+            e.description = CASE
+              WHEN size(node.description) > size(coalesce(e.description, ''))
+              THEN node.description
+              ELSE e.description
+            END,
+            e.properties = node.properties,
+            e.embedding = node.embedding,
+            e.sourceDocumentIds = REDUCE(acc = [], x IN (coalesce(e.sourceDocumentIds, []) + coalesce(node.sourceDocumentIds, [])) | CASE WHEN x IN acc THEN acc ELSE acc + x END),
+            e.sourceChunkIds = REDUCE(acc = [], x IN (coalesce(e.sourceChunkIds, []) + coalesce(node.sourceChunkIds, [])) | CASE WHEN x IN acc THEN acc ELSE acc + x END),
+            e.confidence = node.confidence,
+            e.updatedAt = node.updatedAt
+          `,
+          {
+            nodes: nodes.map((node) => this.serializeNode(node))
+          }
+        );
+      });
+    }
 
   async getNodeById(id: string): Promise<GraphNode | null> {
     return this.withSession("READ", async (session) => {
@@ -200,6 +216,45 @@ export class Neo4jGraphStore implements AbstractGraphStore {
       }
     });
   }
+  /**
+   * Look up existing Entity nodes by type + lowercased name pairs.
+   * Returns a map from `type:lowerName` canonical key to the existing node ID.
+   */
+  async findNodeIdsByCanonicalKeys(
+    keys: Array<{ type: string; lowerName: string }>
+  ): Promise<Map<string, string>> {
+    if (keys.length === 0) {
+      return new Map();
+    }
+
+    return this.withSession("READ", async (session) => {
+      const result = await session.run(
+        `
+        UNWIND $keys AS key
+        MATCH (e:Entity)
+        WHERE toLower(e.type) = key.type AND toLower(e.name) = key.lowerName
+        RETURN key.type + ':' + key.lowerName AS canonicalKey, e.id AS nodeId
+        LIMIT $limit
+        `,
+        {
+          keys: keys.map((k) => ({ type: k.type.toLowerCase(), lowerName: k.lowerName })),
+          limit: neo4j.int(keys.length * 2)
+        }
+      );
+
+      const map = new Map<string, string>();
+      for (const record of result.records) {
+        const canonicalKey = this.toString(record.get("canonicalKey"), "");
+        const nodeId = this.toString(record.get("nodeId"), "");
+        if (canonicalKey.length > 0 && nodeId.length > 0 && !map.has(canonicalKey)) {
+          map.set(canonicalKey, nodeId);
+        }
+      }
+      return map;
+    });
+  }
+
+
 
   async deleteNode(id: string): Promise<void> {
     await this.withSession("WRITE", async (session) => {
@@ -214,54 +269,34 @@ export class Neo4jGraphStore implements AbstractGraphStore {
   }
 
   async saveEdges(edges: GraphEdge[]): Promise<void> {
-    if (edges.length === 0) {
-      return;
-    }
+      if (edges.length === 0) {
+        return;
+      }
 
-    await this.withSession("WRITE", async (session) => {
-      await session.run(
-        `
-        UNWIND $edges AS edge
-        MERGE (source:Entity {id: edge.sourceNodeId})
-        ON CREATE SET
-          source.name = edge.sourceNodeId,
-          source.type = "Unknown",
-          source.description = "",
-          source.properties = '{}',
-          source.sourceDocumentIds = [],
-          source.sourceChunkIds = [],
-          source.confidence = 1.0,
-          source.createdAt = edge.createdAt,
-          source.updatedAt = edge.createdAt
-        MERGE (target:Entity {id: edge.targetNodeId})
-        ON CREATE SET
-          target.name = edge.targetNodeId,
-          target.type = "Unknown",
-          target.description = "",
-          target.properties = '{}',
-          target.sourceDocumentIds = [],
-          target.sourceChunkIds = [],
-          target.confidence = 1.0,
-          target.createdAt = edge.createdAt,
-          target.updatedAt = edge.createdAt
-        MERGE (source)-[r:RELATED_TO {id: edge.id}]->(target)
-        SET
-          r.sourceNodeId = edge.sourceNodeId,
-          r.targetNodeId = edge.targetNodeId,
-          r.relationType = edge.relationType,
-          r.description = edge.description,
-          r.properties = edge.properties,
-          r.weight = edge.weight,
-          r.sourceDocumentIds = edge.sourceDocumentIds,
-          r.confidence = edge.confidence,
-          r.createdAt = coalesce(r.createdAt, edge.createdAt)
-        `,
-        {
-          edges: edges.map((edge) => this.serializeEdge(edge))
-        }
-      );
-    });
-  }
+      await this.withSession("WRITE", async (session) => {
+        await session.run(
+          `
+          UNWIND $edges AS edge
+          MATCH (source:Entity {id: edge.sourceNodeId})
+          MATCH (target:Entity {id: edge.targetNodeId})
+          MERGE (source)-[r:RELATED_TO {id: edge.id}]->(target)
+          SET
+            r.sourceNodeId = edge.sourceNodeId,
+            r.targetNodeId = edge.targetNodeId,
+            r.relationType = edge.relationType,
+            r.description = edge.description,
+            r.properties = edge.properties,
+            r.weight = edge.weight,
+            r.sourceDocumentIds = edge.sourceDocumentIds,
+            r.confidence = edge.confidence,
+            r.createdAt = coalesce(r.createdAt, edge.createdAt)
+          `,
+          {
+            edges: edges.map((edge) => this.serializeEdge(edge))
+          }
+        );
+      });
+    }
 
   async getEdgesByNode(nodeId: string): Promise<GraphEdge[]> {
     return this.withSession("READ", async (session) => {
@@ -333,67 +368,117 @@ export class Neo4jGraphStore implements AbstractGraphStore {
   }
 
   async getSubgraph(query: SubgraphQuery): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
-    const safeMaxDepth = Math.max(1, query.maxDepth ?? 2);
-    const safeMaxNodes = Math.max(1, query.maxNodes ?? 200);
+      const safeMaxDepth = Math.max(1, query.maxDepth ?? 2);
+      const safeMaxNodes = Math.max(1, query.maxNodes ?? 200);
 
-    return this.withSession("READ", async (session) => {
-      let candidateNodes: GraphNode[] = [];
+      return this.withSession("READ", async (session) => {
+        // Build dynamic WHERE clauses for node filtering (T7)
+        const nodeWhereClauses: string[] = [];
+        const params: Record<string, unknown> = {
+          candidateLimit: neo4j.int(safeMaxNodes * 3)
+        };
 
-      if (query.centerNodeIds && query.centerNodeIds.length > 0) {
-        const result = await session.run(
-          `
-          MATCH (seed:Entity)
-          WHERE seed.id IN $centerNodeIds
-          OPTIONAL MATCH path = (seed)-[:RELATED_TO*0..$maxDepth]-(node:Entity)
-          WITH collect(DISTINCT node)[0..$candidateLimit] AS nodes
-          UNWIND nodes AS node
-          WITH node WHERE node IS NOT NULL
-          RETURN DISTINCT node
-          `,
-          {
-            centerNodeIds: query.centerNodeIds,
-            maxDepth: neo4j.int(safeMaxDepth),
-            candidateLimit: neo4j.int(safeMaxNodes * 3)
-          }
+        if (query.nodeTypes && query.nodeTypes.length > 0) {
+          nodeWhereClauses.push("node.type IN $nodeTypes");
+          params.nodeTypes = query.nodeTypes;
+        }
+        if (query.documentIds && query.documentIds.length > 0) {
+          nodeWhereClauses.push(
+            "any(docId IN node.sourceDocumentIds WHERE docId IN $documentIds)"
+          );
+          params.documentIds = query.documentIds;
+        }
+        if (query.minConfidence !== undefined) {
+          nodeWhereClauses.push("node.confidence >= $minConfidence");
+          params.minConfidence = query.minConfidence;
+        }
+
+        const nodeWhereStr =
+          nodeWhereClauses.length > 0 ? `WHERE ${nodeWhereClauses.join(" AND ")}` : "";
+
+        let candidateNodes: GraphNode[];
+
+        if (query.centerNodeIds && query.centerNodeIds.length > 0) {
+          params.centerNodeIds = query.centerNodeIds;
+          // Neo4j does not support parameterized variable-length path ranges,
+          // so we inline the depth value directly into the Cypher string.
+          const cypher = `
+            MATCH (seed:Entity)
+            WHERE seed.id IN $centerNodeIds
+            OPTIONAL MATCH path = (seed)-[:RELATED_TO*0..${safeMaxDepth}]-(node:Entity)
+            WITH collect(DISTINCT node)[0..$candidateLimit] AS nodes
+            UNWIND nodes AS node
+            WITH node WHERE node IS NOT NULL
+            ${nodeWhereStr ? `AND ${nodeWhereClauses.join(" AND ")}` : ""}
+            WITH node
+            OPTIONAL MATCH (node)-[deg:RELATED_TO]-()
+            WITH node, count(deg) AS degree
+            ORDER BY degree DESC
+            RETURN DISTINCT node
+          `;
+          const result = await session.run(cypher, params);
+          candidateNodes = result.records.map((record) =>
+            this.mapGraphNode(record.get("node") as Node)
+          );
+        } else {
+          const cypher = `
+            MATCH (node:Entity)
+            ${nodeWhereStr}
+            WITH node
+            OPTIONAL MATCH (node)-[deg:RELATED_TO]-()
+            WITH node, count(deg) AS degree
+            ORDER BY degree DESC
+            LIMIT $candidateLimit
+            RETURN node
+          `;
+          const result = await session.run(cypher, params);
+          candidateNodes = result.records.map((record) =>
+            this.mapGraphNode(record.get("node") as Node)
+          );
+        }
+
+        const nodes = candidateNodes.slice(0, safeMaxNodes);
+
+        if (nodes.length === 0) {
+          return { nodes: [], edges: [] };
+        }
+
+        // Build edge query with Cypher-level filtering (T7)
+        const nodeIds = nodes.map((node) => node.id);
+        const edgeWhereClauses: string[] = [
+          "source.id IN $nodeIds",
+          "target.id IN $nodeIds"
+        ];
+        const edgeParams: Record<string, unknown> = { nodeIds };
+
+        if (query.relationTypes && query.relationTypes.length > 0) {
+          edgeWhereClauses.push("r.relationType IN $relationTypes");
+          edgeParams.relationTypes = query.relationTypes;
+        }
+        if (query.documentIds && query.documentIds.length > 0) {
+          edgeWhereClauses.push(
+            "any(docId IN r.sourceDocumentIds WHERE docId IN $edgeDocumentIds)"
+          );
+          edgeParams.edgeDocumentIds = query.documentIds;
+        }
+        if (query.minConfidence !== undefined) {
+          edgeWhereClauses.push("r.confidence >= $edgeMinConfidence");
+          edgeParams.edgeMinConfidence = query.minConfidence;
+        }
+
+        const edgeCypher = `
+          MATCH (source:Entity)-[r:RELATED_TO]->(target:Entity)
+          WHERE ${edgeWhereClauses.join(" AND ")}
+          RETURN DISTINCT r
+        `;
+        const edgeResult = await session.run(edgeCypher, edgeParams);
+        const edges = edgeResult.records.map((record) =>
+          this.mapGraphEdge(record.get("r") as Relationship)
         );
-        candidateNodes = result.records.map((record) => this.mapGraphNode(record.get("node") as Node));
-      } else {
-        const result = await session.run(
-          `
-          MATCH (node:Entity)
-          RETURN node
-          LIMIT $candidateLimit
-          `,
-          { candidateLimit: neo4j.int(safeMaxNodes * 3) }
-        );
-        candidateNodes = result.records.map((record) => this.mapGraphNode(record.get("node") as Node));
-      }
 
-      const nodes = candidateNodes
-        .filter((node) => this.matchesNodeFilter(node, query))
-        .slice(0, safeMaxNodes);
-
-      if (nodes.length === 0) {
-        return { nodes: [], edges: [] };
-      }
-
-      const nodeIds = nodes.map((node) => node.id);
-      const edgeResult = await session.run(
-        `
-        MATCH (source:Entity)-[r:RELATED_TO]->(target:Entity)
-        WHERE source.id IN $nodeIds AND target.id IN $nodeIds
-        RETURN DISTINCT r
-        `,
-        { nodeIds }
-      );
-
-      const edges = edgeResult.records
-        .map((record) => this.mapGraphEdge(record.get("r") as Relationship))
-        .filter((edge) => this.matchesEdgeFilter(edge, query));
-
-      return { nodes, edges };
-    });
-  }
+        return { nodes, edges };
+      });
+    }
 
   async saveEmbeddings(nodeId: string, embedding: number[]): Promise<void> {
     await this.withSession("WRITE", async (session) => {
@@ -588,71 +673,188 @@ export class Neo4jGraphStore implements AbstractGraphStore {
   }
 
   async getStats(): Promise<GraphStats> {
+      // T8: Return cached stats if still valid
+      if (this.statsCache && Date.now() < this.statsCache.expiresAt) {
+        return this.statsCache.data;
+      }
+
+      const stats = await this.withSession("READ", async (session) => {
+        // T8: Single Cypher query using CALL {} subqueries
+        const result = await session.run(
+          `
+          CALL {
+            MATCH (e:Entity)
+            RETURN count(e) AS nodeCount
+          }
+          CALL {
+            MATCH ()-[r:RELATED_TO]->()
+            RETURN count(r) AS edgeCount
+          }
+          CALL {
+            MATCH (d:Document)
+            RETURN count(d) AS documentCount
+          }
+          CALL {
+            MATCH (e:Entity)
+            RETURN e.type AS ntName, count(*) AS ntValue
+          }
+          CALL {
+            MATCH ()-[r:RELATED_TO]->()
+            RETURN r.relationType AS etName, count(*) AS etValue
+          }
+          RETURN nodeCount, edgeCount, documentCount,
+                 collect(DISTINCT {name: ntName, value: ntValue}) AS nodeTypeDist,
+                 collect(DISTINCT {name: etName, value: etValue}) AS edgeTypeDist
+          `
+        );
+
+        const row = result.records[0];
+        const nodeCount = this.toNumber(row?.get("nodeCount"));
+        const edgeCount = this.toNumber(row?.get("edgeCount"));
+        const documentCount = this.toNumber(row?.get("documentCount"));
+
+        const toDistMap = (items: unknown): Record<string, number> => {
+          const map: Record<string, number> = {};
+          if (!Array.isArray(items)) return map;
+          for (const item of items) {
+            if (item && typeof item === "object" && "name" in item && "value" in item) {
+              const name = String((item as Record<string, unknown>).name ?? "");
+              const value = this.toNumber((item as Record<string, unknown>).value);
+              if (name.length > 0) {
+                map[name] = value;
+              }
+            }
+          }
+          return map;
+        };
+
+        return {
+          nodeCount,
+          edgeCount,
+          documentCount,
+          nodeTypeDistribution: toDistMap(row?.get("nodeTypeDist")),
+          edgeTypeDistribution: toDistMap(row?.get("edgeTypeDist"))
+        };
+      });
+
+      // Cache the result
+      this.statsCache = {
+        data: stats,
+        expiresAt: Date.now() + Neo4jGraphStore.STATS_TTL_MS
+      };
+
+      return stats;
+    }
+
+  private async ensureIndexes(): Promise<void> {
+      const dimension = Math.max(1, Math.floor(this.config.embeddingDimensions));
+
+      await this.withSession("WRITE", async (session) => {
+        // Vector indexes
+        await session.run(
+          `
+          CREATE VECTOR INDEX entity_embedding IF NOT EXISTS
+          FOR (e:Entity) ON (e.embedding)
+          OPTIONS {indexConfig: {\`vector.dimensions\`: ${dimension}, \`vector.similarity_function\`: 'cosine'}}
+          `
+        );
+
+        await session.run(
+          `
+          CREATE VECTOR INDEX chunk_embedding IF NOT EXISTS
+          FOR (c:Chunk) ON (c.embedding)
+          OPTIONS {indexConfig: {\`vector.dimensions\`: ${dimension}, \`vector.similarity_function\`: 'cosine'}}
+          `
+        );
+
+        // Fulltext index
+        await session.run(
+          `
+          CREATE FULLTEXT INDEX entity_name_fulltext IF NOT EXISTS
+          FOR (e:Entity) ON EACH [e.name, e.description]
+          `
+        );
+
+        // T6: Unique constraints
+        await session.run(
+          `CREATE CONSTRAINT entity_id_unique IF NOT EXISTS FOR (e:Entity) REQUIRE e.id IS UNIQUE`
+        );
+        await session.run(
+          `CREATE CONSTRAINT document_id_unique IF NOT EXISTS FOR (d:Document) REQUIRE d.id IS UNIQUE`
+        );
+        await session.run(
+          `CREATE CONSTRAINT chunk_id_unique IF NOT EXISTS FOR (c:Chunk) REQUIRE c.id IS UNIQUE`
+        );
+
+        // T6: B-tree indexes for Entity.type and Entity.confidence
+        await session.run(
+          `CREATE INDEX entity_type_idx IF NOT EXISTS FOR (e:Entity) ON (e.type)`
+        );
+        await session.run(
+          `CREATE INDEX entity_confidence_idx IF NOT EXISTS FOR (e:Entity) ON (e.confidence)`
+        );
+      });
+    }
+  // T16: Graph quality report
+  async getQualityReport(): Promise<{
+    ghostNodes: number;
+    isolatedNodes: number;
+    lowConfidenceNodes: number;
+    suspectedDuplicates: number;
+    totalNodes: number;
+    totalEdges: number;
+  }> {
     return this.withSession("READ", async (session) => {
-      const countResult = await session.run(
-        `
-        MATCH (e:Entity)
-        WITH count(e) AS nodeCount
-        MATCH ()-[r:RELATED_TO]->()
-        WITH nodeCount, count(r) AS edgeCount
-        MATCH (d:Document)
-        RETURN nodeCount, edgeCount, count(d) AS documentCount
-        `
-      );
+      const result = await session.run(`
+        CALL { MATCH (e:Entity) RETURN count(e) AS totalNodes }
+        CALL { MATCH ()-[r:RELATED_TO]->() RETURN count(r) AS totalEdges }
+        CALL { MATCH (e:Entity) WHERE e.type = "Unknown" RETURN count(e) AS ghostNodes }
+        CALL {
+          MATCH (e:Entity)
+          WHERE NOT (e)--()
+          RETURN count(e) AS isolatedNodes
+        }
+        CALL {
+          MATCH (e:Entity)
+          WHERE e.confidence < 0.5
+          RETURN count(e) AS lowConfidenceNodes
+        }
+        CALL {
+          MATCH (e:Entity)
+          WITH e.name AS name, e.type AS type, count(*) AS cnt
+          WHERE cnt > 1
+          RETURN sum(cnt) AS suspectedDuplicates
+        }
+        RETURN totalNodes, totalEdges, ghostNodes, isolatedNodes, lowConfidenceNodes, suspectedDuplicates
+      `);
 
-      const distNodeResult = await session.run(
-        `
-        MATCH (e:Entity)
-        RETURN e.type AS name, count(*) AS value
-        `
-      );
-
-      const distEdgeResult = await session.run(
-        `
-        MATCH ()-[r:RELATED_TO]->()
-        RETURN r.relationType AS name, count(*) AS value
-        `
-      );
-
-      const row = countResult.records[0];
+      const row = result.records[0];
       return {
-        nodeCount: this.toNumber(row?.get("nodeCount")),
-        edgeCount: this.toNumber(row?.get("edgeCount")),
-        documentCount: this.toNumber(row?.get("documentCount")),
-        nodeTypeDistribution: this.toDistributionMap(distNodeResult),
-        edgeTypeDistribution: this.toDistributionMap(distEdgeResult)
+        totalNodes: this.toNumber(row?.get("totalNodes")),
+        totalEdges: this.toNumber(row?.get("totalEdges")),
+        ghostNodes: this.toNumber(row?.get("ghostNodes")),
+        isolatedNodes: this.toNumber(row?.get("isolatedNodes")),
+        lowConfidenceNodes: this.toNumber(row?.get("lowConfidenceNodes")),
+        suspectedDuplicates: this.toNumber(row?.get("suspectedDuplicates"))
       };
     });
   }
 
-  private async ensureIndexes(): Promise<void> {
-    const dimension = Math.max(1, Math.floor(this.config.embeddingDimensions));
+  // T17: Export all nodes and edges
+  async exportAllNodesAndEdges(): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
+    return this.withSession("READ", async (session) => {
+      const nodeResult = await session.run(`MATCH (e:Entity) RETURN e`);
+      const nodes = nodeResult.records.map((r) => this.mapGraphNode(r.get("e") as Node));
 
-    await this.withSession("WRITE", async (session) => {
-      await session.run(
-        `
-        CREATE VECTOR INDEX entity_embedding IF NOT EXISTS
-        FOR (e:Entity) ON (e.embedding)
-        OPTIONS {indexConfig: {\`vector.dimensions\`: ${dimension}, \`vector.similarity_function\`: 'cosine'}}
-        `
+      const edgeResult = await session.run(
+        `MATCH (s:Entity)-[r:RELATED_TO]->(t:Entity) RETURN r, s.id AS sourceId, t.id AS targetId`
       );
+      const edges = edgeResult.records.map((r) => this.mapGraphEdge(r.get("r") as Relationship));
 
-      await session.run(
-        `
-        CREATE VECTOR INDEX chunk_embedding IF NOT EXISTS
-        FOR (c:Chunk) ON (c.embedding)
-        OPTIONS {indexConfig: {\`vector.dimensions\`: ${dimension}, \`vector.similarity_function\`: 'cosine'}}
-        `
-      );
-
-      await session.run(
-        `
-        CREATE FULLTEXT INDEX entity_name_fulltext IF NOT EXISTS
-        FOR (e:Entity) ON EACH [e.name, e.description]
-        `
-      );
+      return { nodes, edges };
     });
   }
+
 
   private withSession<T>(accessMode: AccessMode, fn: (session: Session) => Promise<T>): Promise<T> {
     const sessionConfig: SessionConfig = {
@@ -872,47 +1074,7 @@ export class Neo4jGraphStore implements AbstractGraphStore {
     };
   }
 
-  private matchesNodeFilter(node: GraphNode, query: SubgraphQuery): boolean {
-    if (query.nodeTypes && query.nodeTypes.length > 0 && !query.nodeTypes.includes(node.type)) {
-      return false;
-    }
 
-    if (query.documentIds && query.documentIds.length > 0) {
-      const hit = node.sourceDocumentIds.some((docId) => query.documentIds?.includes(docId));
-      if (!hit) {
-        return false;
-      }
-    }
-
-    if (query.minConfidence !== undefined && node.confidence < query.minConfidence) {
-      return false;
-    }
-
-    return true;
-  }
-
-  private matchesEdgeFilter(edge: GraphEdge, query: SubgraphQuery): boolean {
-    if (
-      query.relationTypes &&
-      query.relationTypes.length > 0 &&
-      !query.relationTypes.includes(edge.relationType)
-    ) {
-      return false;
-    }
-
-    if (query.documentIds && query.documentIds.length > 0) {
-      const hit = edge.sourceDocumentIds.some((docId) => query.documentIds?.includes(docId));
-      if (!hit) {
-        return false;
-      }
-    }
-
-    if (query.minConfidence !== undefined && edge.confidence < query.minConfidence) {
-      return false;
-    }
-
-    return true;
-  }
 
   private toDistributionMap(result: { records: Array<{ get: (field: string) => unknown }> }): Record<string, number> {
     const distribution: Record<string, number> = {};

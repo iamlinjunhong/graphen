@@ -16,6 +16,19 @@ export interface ChatSource {
   pageNumber?: number;
 }
 
+export interface SourcePath {
+  nodes: string[];
+  relations: string[];
+}
+
+export interface InferredRelation {
+  source: string;
+  target: string;
+  relationType: string;
+  reasoning: string;
+  confidence: number;
+}
+
 export interface ChatMessage {
   id: string;
   sessionId: string;
@@ -26,5 +39,7 @@ export interface ChatMessage {
     nodes: string[];
     edges: string[];
   };
+  sourcePaths?: SourcePath[];
+  inferredRelations?: InferredRelation[];
   createdAt: Date;
 }

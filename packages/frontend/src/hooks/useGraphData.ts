@@ -110,7 +110,7 @@ function buildReagraphData(nodes: GraphNode[], edges: GraphEdge[]): ReagraphData
   return {
     nodes: nodes.map((node) => ({
       id: node.id,
-      label: node.name,
+      label: `${node.name}\n[${node.type}]`,
       fill: mapNodeColor(node.type),
       size: clamp(16 + (degreeMap.get(node.id) ?? 0) * 3, 16, 42),
       data: node
@@ -218,7 +218,31 @@ export function useGraphData(options: UseGraphDataOptions = {}) {
         subgraph.edges,
         Math.max(12, initialLoadLimit)
       );
-      setGraphData(trimmed);
+
+      // T19: Progressive loading — render top-30 immediately, append rest after 500ms
+      const FIRST_BATCH_SIZE = 30;
+      if (trimmed.nodes.length > FIRST_BATCH_SIZE) {
+        const firstBatchNodes = trimmed.nodes.slice(0, FIRST_BATCH_SIZE);
+        const firstBatchIds = new Set(firstBatchNodes.map((n) => n.id));
+        const firstBatchEdges = trimmed.edges.filter(
+          (e) => firstBatchIds.has(e.sourceNodeId) && firstBatchIds.has(e.targetNodeId)
+        );
+        setGraphData({ nodes: firstBatchNodes, edges: firstBatchEdges });
+
+        // Append remaining nodes after a short delay for layout stability
+        const remainingNodes = trimmed.nodes.slice(FIRST_BATCH_SIZE);
+        const remainingEdges = trimmed.edges.filter(
+          (e) => !firstBatchIds.has(e.sourceNodeId) || !firstBatchIds.has(e.targetNodeId)
+        );
+        await new Promise<void>((resolve) => {
+          setTimeout(() => {
+            appendSubgraph({ nodes: remainingNodes, edges: remainingEdges });
+            resolve();
+          }, 500);
+        });
+      } else {
+        setGraphData(trimmed);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to load initial graph";
       setError(message);
@@ -227,6 +251,7 @@ export function useGraphData(options: UseGraphDataOptions = {}) {
       setIsLoading(false);
     }
   }, [
+    appendSubgraph,
     defaultMaxDepth,
     filters.documentIds,
     filters.minConfidence,

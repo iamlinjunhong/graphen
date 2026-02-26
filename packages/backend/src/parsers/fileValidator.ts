@@ -58,7 +58,12 @@ export async function validateUploadedFile(
   const detected = await fileTypeFromBuffer(file.buffer);
   const detectedMime = detected?.mime.toLowerCase();
 
-  if (declaredMime && !allowed.includes(declaredMime)) {
+  // Browsers often send application/octet-stream for text-based files (.md, .txt).
+  // Treat it as unknown and fall back to extension-based detection instead of rejecting.
+  const effectiveDeclaredMime =
+    declaredMime === "application/octet-stream" ? "" : declaredMime;
+
+  if (effectiveDeclaredMime && !allowed.includes(effectiveDeclaredMime)) {
     throw new Error(`MIME type mismatch for ${extension}. Received ${declaredMime}.`);
   }
 

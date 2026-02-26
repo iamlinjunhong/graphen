@@ -67,6 +67,8 @@ interface DocumentStatusSnapshot {
   progress?: number;
   message?: string;
   updatedAt: string;
+  chunkCount?: number;
+  entityCount?: number;
 }
 
 interface CreateDocumentsRouterOptions {
@@ -188,11 +190,26 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
 
         const latest = await getDocumentById(document.id);
         if (latest) {
+          // T11: Attach chunkCount/entityCount metadata to completed event
+          let chunkCount: number | undefined;
+          let entityCount: number | undefined;
+          try {
+            const chunks = await store.getChunksByDocument(document.id);
+            chunkCount = chunks.length;
+            const stats = await store.getStats();
+            // entityCount from document metadata if available, otherwise omit
+            entityCount = latest.metadata.entityCount as number | undefined;
+          } catch {
+            // Non-critical — proceed without metadata
+          }
+
           rememberStatus({
             id: latest.id,
             status: latest.status,
             phase: "completed",
             progress: 100,
+            chunkCount,
+            entityCount,
             updatedAt: new Date().toISOString()
           });
         }
@@ -536,6 +553,38 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
         id: documentId
       };
       return res.status(202).json(response);
+    }
+  );
+
+  // T10: Document preview endpoint
+  documentsRouter.get(
+    "/:id/preview",
+    validate({ params: documentParamsSchema }),
+    async (req, res) => {
+      try {
+        await ensureStoreConnected();
+      } catch (error) {
+        logger.error({ err: error }, "Graph store connection failed");
+        return res.status(503).json({ error: "Graph store unavailable" });
+      }
+
+      const documentId = req.params.id ?? "";
+      const document = await getDocumentById(documentId);
+      if (!document) {
+        return res.status(404).json({ error: "Document not found" });
+      }
+
+      const chunks = await store.getChunksByDocument(documentId);
+      const previewChunks = chunks
+        .sort((a, b) => a.index - b.index)
+        .slice(0, 3);
+
+      let preview = previewChunks.map((c) => c.content).join("\n\n");
+      if (preview.length > 5000) {
+        preview = preview.slice(0, 5000) + "\n…（已截断）";
+      }
+
+      return res.json({ documentId, preview });
     }
   );
 

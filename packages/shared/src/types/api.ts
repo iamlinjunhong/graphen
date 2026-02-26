@@ -154,3 +154,22 @@ export interface HealthResponse {
     heapTotal: number;
   };
 }
+
+export interface GraphQualityReport {
+  ghostNodes: number;
+  isolatedNodes: number;
+  lowConfidenceNodes: number;
+  suspectedDuplicates: number;
+  totalNodes: number;
+  totalEdges: number;
+}
+
+export interface GraphQualityResponse {
+  report: GraphQualityReport;
+}
+
+export interface GraphExportResponse {
+  format: "jsonld" | "cypher";
+  data: string;
+}
+

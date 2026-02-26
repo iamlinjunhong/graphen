@@ -3,9 +3,10 @@ import type {
   ChunkSearchResult,
   GraphEdge,
   GraphNode,
+  InferredRelation,
   SearchResult
 } from "@graphen/shared";
-import type { ChatMessage, ChatSession, ChatSource } from "@graphen/shared";
+import type { ChatMessage, ChatSession, ChatSource, SourcePath } from "@graphen/shared";
 import type { ChatStoreLike } from "./ChatStore.js";
 import type { LLMServiceLike, QuestionAnalysis } from "./llmTypes.js";
 
@@ -45,6 +46,8 @@ export type ChatStreamEvent =
       type: "sources";
       sources: ChatSource[];
       graphContext: { nodes: string[]; edges: string[] };
+      sourcePaths: SourcePath[];
+      inferredRelations: InferredRelation[];
     }
   | {
       type: "done";
@@ -62,6 +65,8 @@ interface RetrievedContext {
   retrievedChunksText: string;
   sources: ChatSource[];
   graphContext: { nodes: string[]; edges: string[] };
+  sourcePaths: SourcePath[];
+  inferredRelations: InferredRelation[];
 }
 
 export class ChatService {
@@ -167,13 +172,17 @@ export class ChatService {
       role: "assistant",
       content: finalizedAnswer,
       sources: context.sources,
-      graphContext: context.graphContext
+      graphContext: context.graphContext,
+      sourcePaths: context.sourcePaths,
+      inferredRelations: context.inferredRelations
     });
 
     yield {
       type: "sources",
       sources: context.sources,
-      graphContext: context.graphContext
+      graphContext: context.graphContext,
+      sourcePaths: context.sourcePaths,
+      inferredRelations: context.inferredRelations
     };
     yield {
       type: "done",
@@ -182,55 +191,82 @@ export class ChatService {
   }
 
   private async retrieveContext(
-    question: string,
-    analysis: QuestionAnalysis
-  ): Promise<RetrievedContext> {
-    const graphContext = await this.retrieveGraphContext(question, analysis);
-    const vectorContext = await this.retrieveVectorContext(question, analysis);
+        question: string,
+        analysis: QuestionAnalysis
+      ): Promise<RetrievedContext> {
+        const graphContext = await this.retrieveGraphContext(question, analysis);
+        const vectorContext = await this.retrieveVectorContext(question, analysis);
 
-    return {
-      graphContextText: this.buildGraphContextText(graphContext.nodes, graphContext.edges),
-      retrievedChunksText: this.buildChunkContextText(vectorContext.chunks),
-      sources: vectorContext.sources,
-      graphContext: {
-        nodes: graphContext.nodes.map((node) => node.id),
-        edges: graphContext.edges.map((edge) => edge.id)
+        // T18: Multi-hop inference — infer implicit relations from subgraph triples
+        let inferredRelations: InferredRelation[] = [];
+        if (graphContext.edges.length > 0 && this.llmService.inferRelations) {
+          try {
+            const triples = this.buildTriplesText(graphContext.nodes, graphContext.edges);
+            const rawInferred = await this.llmService.inferRelations(triples);
+            inferredRelations = rawInferred.map((r) => ({
+              source: r.source,
+              target: r.target,
+              relationType: r.relation_type,
+              reasoning: r.reasoning,
+              confidence: r.confidence
+            }));
+          } catch {
+            // Inference is best-effort; don't block the response
+          }
+        }
+
+        return {
+          graphContextText: this.buildGraphContextText(
+            graphContext.nodes,
+            graphContext.edges,
+            graphContext.paths,
+            inferredRelations
+          ),
+          retrievedChunksText: this.buildChunkContextText(vectorContext.chunks),
+          sources: vectorContext.sources,
+          graphContext: {
+            nodes: graphContext.nodes.map((node) => node.id),
+            edges: graphContext.edges.map((edge) => edge.id)
+          },
+          sourcePaths: graphContext.paths,
+          inferredRelations
+        };
       }
-    };
-  }
 
   private async retrieveGraphContext(
-    question: string,
-    analysis: QuestionAnalysis
-  ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
-    if (!analysis.retrieval_strategy.use_graph) {
-      return { nodes: [], edges: [] };
-    }
+        question: string,
+        analysis: QuestionAnalysis
+      ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; paths: SourcePath[] }> {
+        if (!analysis.retrieval_strategy.use_graph) {
+          return { nodes: [], edges: [], paths: [] };
+        }
 
-    const centerNodeIds = await this.collectCenterNodeIds(question, analysis);
-    if (centerNodeIds.length === 0) {
-      return { nodes: [], edges: [] };
-    }
+        const centerNodeIds = await this.collectCenterNodeIds(question, analysis);
+        if (centerNodeIds.length === 0) {
+          return { nodes: [], edges: [], paths: [] };
+        }
 
-    const maxDepth = clampInt(analysis.retrieval_strategy.graph_depth, 1, 4);
-    const maxNodes = Math.max(50, this.options.maxGraphContextNodes * 3);
-    const subgraph = await this.graphStore.getSubgraph({
-      centerNodeIds,
-      maxDepth,
-      maxNodes
-    });
+        const maxDepth = clampInt(analysis.retrieval_strategy.graph_depth, 1, 4);
+        const maxNodes = Math.max(50, this.options.maxGraphContextNodes * 3);
+        const subgraph = await this.graphStore.getSubgraph({
+          centerNodeIds,
+          maxDepth,
+          maxNodes
+        });
 
-    const nodes = subgraph.nodes.slice(0, this.options.maxGraphContextNodes);
-    const allowedNodeIds = new Set(nodes.map((node) => node.id));
-    const edges = subgraph.edges
-      .filter(
-        (edge) =>
-          allowedNodeIds.has(edge.sourceNodeId) && allowedNodeIds.has(edge.targetNodeId)
-      )
-      .slice(0, this.options.maxGraphContextEdges);
+        const nodes = subgraph.nodes.slice(0, this.options.maxGraphContextNodes);
+        const allowedNodeIds = new Set(nodes.map((node) => node.id));
+        const edges = subgraph.edges
+          .filter(
+            (edge) =>
+              allowedNodeIds.has(edge.sourceNodeId) && allowedNodeIds.has(edge.targetNodeId)
+          )
+          .slice(0, this.options.maxGraphContextEdges);
 
-    return { nodes, edges };
-  }
+        const paths = buildTopPaths(nodes, edges, centerNodeIds);
+
+        return { nodes, edges, paths };
+      }
 
   private async collectCenterNodeIds(
     question: string,
@@ -295,28 +331,69 @@ export class ChatService {
     return { chunks, sources };
   }
 
-  private buildGraphContextText(nodes: GraphNode[], edges: GraphEdge[]): string {
-    if (nodes.length === 0 && edges.length === 0) {
-      return "（无图谱上下文）";
-    }
+  private buildGraphContextText(
+        nodes: GraphNode[],
+        edges: GraphEdge[],
+        paths: SourcePath[] = [],
+        inferredRelations: InferredRelation[] = []
+      ): string {
+        if (nodes.length === 0 && edges.length === 0) {
+          return "（无图谱上下文）";
+        }
 
-    const nodeById = new Map(nodes.map((node) => [node.id, node]));
-    const nodeLines = nodes.map(
-      (node) => `- ${node.name} (${node.type}): ${trimSnippet(node.description, 160)}`
-    );
-    const edgeLines = edges.map((edge) => {
+        const nodeById = new Map(nodes.map((node) => [node.id, node]));
+        const nodeLines = nodes.map(
+          (node) => `- ${node.name} (${node.type}): ${trimSnippet(node.description, 160)}`
+        );
+        const edgeLines = edges.map((edge) => {
+          const sourceName = nodeById.get(edge.sourceNodeId)?.name ?? edge.sourceNodeId;
+          const targetName = nodeById.get(edge.targetNodeId)?.name ?? edge.targetNodeId;
+          return `- ${sourceName} --[${edge.relationType}]--> ${targetName}`;
+        });
+
+        const sections = [
+          "实体：",
+          ...nodeLines,
+          "",
+          "关系：",
+          ...edgeLines
+        ];
+
+        if (paths.length > 0) {
+          sections.push("", "推理路径：");
+          for (const path of paths) {
+            const parts: string[] = [];
+            for (let i = 0; i < path.nodes.length; i++) {
+              parts.push(path.nodes[i]!);
+              if (i < path.relations.length) {
+                parts.push(`--[${path.relations[i]}]-->`);
+              }
+            }
+            sections.push(`- ${parts.join(" ")}`);
+          }
+        }
+
+        if (inferredRelations.length > 0) {
+          sections.push("", "推断关系（LLM 推断，非显式记录）：");
+          for (const rel of inferredRelations) {
+            sections.push(
+              `- ${rel.source} --[${rel.relationType}]--> ${rel.target} (置信度: ${rel.confidence.toFixed(2)}, 依据: ${rel.reasoning})`
+            );
+          }
+        }
+
+        return sections.join("\n");
+      }
+
+  private buildTriplesText(nodes: GraphNode[], edges: GraphEdge[]): string {
+    const nodeById = new Map(nodes.map((n) => [n.id, n]));
+    const lines: string[] = [];
+    for (const edge of edges) {
       const sourceName = nodeById.get(edge.sourceNodeId)?.name ?? edge.sourceNodeId;
       const targetName = nodeById.get(edge.targetNodeId)?.name ?? edge.targetNodeId;
-      return `- ${sourceName} -[${edge.relationType}]-> ${targetName}`;
-    });
-
-    return [
-      "实体：",
-      ...nodeLines,
-      "",
-      "关系：",
-      ...edgeLines
-    ].join("\n");
+      lines.push(`${sourceName} --[${edge.relationType}]--> ${targetName}`);
+    }
+    return lines.join("\n");
   }
 
   private buildChunkContextText(chunks: ChunkSearchResult[]): string {
@@ -350,4 +427,64 @@ function dedupeStrings(values: string[]): string[] {
 
 function clampInt(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+/**
+ * T9: Build ordered paths from seed nodes through edges.
+ * Produces human-readable path strings like: A --[works_for]--> B --[located_in]--> C
+ */
+function buildTopPaths(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  seedNodeIds: string[],
+  maxPaths = 10
+): SourcePath[] {
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  const adjacency = new Map<string, { targetId: string; relationType: string }[]>();
+
+  for (const edge of edges) {
+    const list = adjacency.get(edge.sourceNodeId) ?? [];
+    list.push({ targetId: edge.targetNodeId, relationType: edge.relationType });
+    adjacency.set(edge.sourceNodeId, list);
+  }
+
+  const paths: SourcePath[] = [];
+  const seedSet = new Set(seedNodeIds);
+
+  for (const seedId of seedNodeIds) {
+    if (paths.length >= maxPaths) break;
+    const seedNode = nodeById.get(seedId);
+    if (!seedNode) continue;
+
+    const neighbors = adjacency.get(seedId) ?? [];
+    for (const hop1 of neighbors) {
+      if (paths.length >= maxPaths) break;
+      const hop1Node = nodeById.get(hop1.targetId);
+      if (!hop1Node) continue;
+
+      // Try extending to 2-hop
+      const hop2Neighbors = adjacency.get(hop1.targetId) ?? [];
+      const hop2 = hop2Neighbors.find(
+        (h) => !seedSet.has(h.targetId) && h.targetId !== seedId && nodeById.has(h.targetId)
+      );
+
+      if (hop2) {
+        const hop2Node = nodeById.get(hop2.targetId);
+        if (hop2Node) {
+          paths.push({
+            nodes: [seedNode.name, hop1Node.name, hop2Node.name],
+            relations: [hop1.relationType, hop2.relationType]
+          });
+          continue;
+        }
+      }
+
+      paths.push({
+        nodes: [seedNode.name, hop1Node.name],
+        relations: [hop1.relationType]
+      });
+    }
+  }
+
+  return paths;
 }

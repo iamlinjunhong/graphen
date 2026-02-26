@@ -5,6 +5,7 @@ import { apiClient } from "../services/api";
 import { useGraphStore } from "../stores/useGraphStore";
 import { GraphCanvas } from "./GraphCanvas";
 import { GraphControls } from "./GraphControls";
+import { GraphQualityPanel } from "./GraphQualityPanel";
 import { GraphSidebar } from "./GraphSidebar";
 import { NodeDetailPanel } from "./NodeDetailPanel";
 
@@ -61,35 +62,61 @@ export function GraphView() {
   const [expandingNodeId, setExpandingNodeId] = useState<string | null>(null);
 
   useEffect(() => {
-    void loadInitialGraphData();
-  }, [loadInitialGraphData]);
-
-  useEffect(() => {
     const controller = new AbortController();
 
-    const loadDocuments = async () => {
-      try {
-        const result = await apiClient.documents.list({
-          page: 1,
-          pageSize: 300,
+    const loadAllDocuments = async (): Promise<DocumentOption[]> => {
+      const allOptions: DocumentOption[] = [];
+      let page = 1;
+      const pageSize = 100;
+
+      // First page
+      const first = await apiClient.documents.list({
+        page,
+        pageSize,
+        signal: controller.signal
+      });
+      for (const doc of first.items) {
+        allOptions.push({ id: doc.id, label: doc.filename });
+      }
+
+      // Paginate remaining if needed
+      const totalCount = first.totalCount;
+      while (allOptions.length < totalCount) {
+        page += 1;
+        const next = await apiClient.documents.list({
+          page,
+          pageSize,
           signal: controller.signal
         });
-        const options = result.items.map((document) => ({
-          id: document.id,
-          label: document.filename
-        }));
+        for (const doc of next.items) {
+          allOptions.push({ id: doc.id, label: doc.filename });
+        }
+        if (next.items.length === 0) break;
+      }
+
+      return allOptions;
+    };
+
+    const init = async () => {
+      try {
+        // Load documents first to avoid race condition (T4)
+        const options = await loadAllDocuments();
         setDocumentOptions(options);
       } catch (error) {
-        if (error instanceof Error && error.name === "AbortError") {
-          return;
-        }
+        if (error instanceof Error && error.name === "AbortError") return;
+      }
+
+      try {
+        await loadInitialGraphData();
+      } catch {
+        // error is already handled inside loadInitialGraphData
       }
     };
 
-    void loadDocuments();
+    void init();
 
     return () => controller.abort();
-  }, []);
+  }, [loadInitialGraphData]);
 
   const nodeTypes = useMemo(
     () => Array.from(new Set(nodes.map((node) => node.type))).sort((a, b) => a.localeCompare(b)),
@@ -112,6 +139,11 @@ export function GraphView() {
         label: knownLabels.get(id) ?? id
       }));
   }, [documentOptions, nodes]);
+
+  const documentLabelMap = useMemo(
+    () => new Map(documentOptions.map((item) => [item.id, item.label])),
+    [documentOptions]
+  );
 
   const selectedNode = useMemo(
     () => nodes.find((node) => node.id === selectedNodeId) ?? null,
@@ -344,6 +376,7 @@ export function GraphView() {
                   setSelectedNodeId(null);
                 }}
               />
+              <GraphQualityPanel />
             </div>
           </section>
         </div>
@@ -353,6 +386,7 @@ export function GraphView() {
           degree={selectedNodeDegree}
           neighborNames={selectedNodeNeighbors}
           isExpanding={expandingNodeId === selectedNode?.id}
+          documentLabels={documentLabelMap}
           onExpand={(node) => {
             void handleExpandNode(node.id);
           }}

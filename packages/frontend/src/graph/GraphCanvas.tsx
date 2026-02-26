@@ -137,7 +137,7 @@ export function GraphCanvas({
         {...optionalActiveProps}
         draggable
         animated
-        labelType="nodes"
+        labelType="all"
         edgeArrowPosition="end"
         layoutType={resolveLayoutType(layoutMode)}
         cameraMode="pan"

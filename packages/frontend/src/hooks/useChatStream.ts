@@ -41,6 +41,7 @@ interface SourcesEventPayload {
   type: "sources";
   sources: ChatSource[];
   graphContext: { nodes: string[]; edges: string[] };
+  sourcePaths: Array<{ nodes: string[]; relations: string[] }>;
 }
 
 interface DoneEventPayload {
