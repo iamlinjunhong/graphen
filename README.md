@@ -25,7 +25,7 @@
 | **可视化** | Reagraph (2D Force Layout) |
 | **状态管理** | Zustand |
 | **后端** | Node.js + Express + TypeScript |
-| **LLM** | 通义千问 Qwen API (OpenAI-compatible) |
+| **LLM** | Gemini / Qwen / OpenAI (OpenAI-compatible) |
 | **图数据库** | Neo4j 5.x (Graph + Vector Index) |
 | **Chat 存储** | SQLite (better-sqlite3) |
 | **Monorepo** | pnpm workspace |
@@ -56,7 +56,7 @@ graphen/
 | **Node.js** | ≥ 18.x | 推荐使用 LTS 版本 (20.x / 22.x) |
 | **pnpm** | ≥ 10.0 | 包管理器 (`npm install -g pnpm`) |
 | **Neo4j** | ≥ 5.x | 图数据库 (本地安装或 Neo4j Aura Free Tier) |
-| **Qwen API Key** | — | 通义千问 API 密钥 ([申请地址](https://dashscope.console.aliyun.com/)) |
+| **LLM API Key** | — | Gemini, Qwen 或 OpenAI 的 API 密钥 |
 
 ### 2. 安装 Neo4j
 
@@ -98,7 +98,8 @@ cp .env.example .env
 
 ```bash
 # ⚠️ 必须填写
-QWEN_API_KEY=sk-xxxxxxxxxxxxxxxx
+LLM_PROVIDER=gemini # 或 qwen, openai
+GEMINI_API_KEY=sk-xxxxxxxxxxxxxxxx
 NEO4J_PASSWORD=your-neo4j-password
 
 # 其余配置已有默认值，可按需调整
@@ -136,15 +137,17 @@ pnpm dev
 | `CORS_ORIGIN` | `http://localhost:5173` | 允许的前端 CORS 来源 |
 | `LOG_LEVEL` | `info` | 日志级别 (`debug` / `info` / `warn` / `error`) |
 
-### Qwen LLM 配置
+### LLM 配置
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
+| `LLM_PROVIDER` | `gemini` | LLM 供应商选择 (`gemini`, `qwen`, `openai`) |
+| `GEMINI_API_KEY` | *(必填)* | Gemini API 密钥 |
 | `QWEN_API_KEY` | *(必填)* | 通义千问 API 密钥 |
-| `QWEN_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | API 端点 |
-| `QWEN_CHAT_MODEL` | `qwen-max` | 对话 & 实体抽取模型 |
-| `QWEN_EMBEDDING_MODEL` | `text-embedding-v3` | 文本向量化模型 |
-| `EMBEDDING_DIMENSIONS` | `1024` | Embedding 向量维度（须与模型匹配） |
+| `OPENAI_API_KEY` | *(必填)* | OpenAI API 密钥 |
+| `EMBEDDING_DIMENSIONS` | `1024` | Embedding 向量维度（须与选中的模型匹配） |
+
+> 💡 更多详细配置（如 `BASE_URL`, `MODEL_NAME`）请参考 `.env.example`。
 
 ### LLM 限流 & 容错
 
@@ -188,6 +191,16 @@ pnpm dev
 |------|--------|------|
 | `CHAT_DB_PATH` | `data/chat.db` | SQLite 对话数据库路径 |
 | `CACHE_DIR` | `data/cache` | 解析中间结果缓存目录 |
+
+---
+
+## 🧪 测试案例
+
+项目在 [`/cases`](./cases) 目录下提供了一些简单的测试案例，方便快速上手：
+
+- **Simple Finance**: 包含一组金融相关的 Markdown 文档（关系识别、市场事件、交易网络），适合测试图谱抽取的准确性和关联性。
+
+你可以直接将这些文件上传到应用中，观察知识图谱的构建效果。
 
 ---
 
