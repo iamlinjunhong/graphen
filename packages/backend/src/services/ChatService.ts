@@ -9,6 +9,7 @@ import type {
 import type { ChatMessage, ChatSession, ChatSource, SourcePath } from "@graphen/shared";
 import type { ChatStoreLike } from "./ChatStore.js";
 import type { LLMServiceLike, QuestionAnalysis } from "./llmTypes.js";
+import { buildTitleGenerationPrompt } from "../prompts/titlePrompt.js";
 
 export class ChatSessionNotFoundError extends Error {
   constructor(sessionId: string) {
@@ -101,6 +102,37 @@ export class ChatService {
   deleteSession(sessionId: string): boolean {
     return this.chatStore.deleteSession(sessionId);
   }
+
+  updateSessionTitle(sessionId: string, title: string): boolean {
+    return this.chatStore.updateSessionTitle(sessionId, title);
+  }
+
+  async generateSmartTitle(sessionId: string): Promise<string | null> {
+    const data = this.chatStore.getSessionWithMessages(sessionId);
+    if (!data) throw new ChatSessionNotFoundError(sessionId);
+
+    const { messages } = data;
+    const userMsg = messages.find(m => m.role === 'user');
+    const assistantMsg = messages.find(m => m.role === 'assistant');
+    if (!userMsg || !assistantMsg) return null;
+
+    const prompt = buildTitleGenerationPrompt(userMsg.content, assistantMsg.content);
+    let title = '';
+    for await (const delta of this.llmService.chatCompletion(
+      [{ id: '', sessionId, role: 'user', content: prompt, createdAt: new Date() }],
+      { graphContext: '', retrievedChunks: '' },
+    )) {
+      title += delta;
+    }
+
+    const smartTitle = title.trim().slice(0, 30);
+    if (smartTitle.length > 0) {
+      this.chatStore.updateSessionTitle(sessionId, smartTitle);
+    }
+    return smartTitle || null;
+  }
+
+
 
   async completeMessage(input: SendMessageInput): Promise<ChatMessage> {
     let doneMessage: ChatMessage | null = null;

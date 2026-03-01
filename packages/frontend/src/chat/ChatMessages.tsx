@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Zap } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { ChatMessage, ChatSource } from "@graphen/shared";
 import { ChatSourceCard } from "./ChatSourceCard";
 import { ChatPathCard } from "./ChatPathCard";
@@ -37,12 +39,6 @@ export function ChatMessages({
   return (
     <section className="chat-messages-panel" aria-label="Chat messages">
       <div className="chat-message-list">
-        {messages.length === 0 && !isStreaming ? (
-          <p className="muted" style={{ padding: "24px 0", textAlign: "center" }}>
-            No messages yet. Start a conversation!
-          </p>
-        ) : null}
-
         {messages.map((message) => {
           const isAssistant = message.role === "assistant";
 
@@ -59,7 +55,11 @@ export function ChatMessages({
               {/* Body */}
               <div className="chat-message-body">
                 <div className="chat-message-bubble">
-                  <p>{message.content}</p>
+                  <div className="chat-markdown-content">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {message.content}
+                    </ReactMarkdown>
+                  </div>
 
                   {/* Source citations */}
                   {isAssistant && message.sources && message.sources.length > 0 ? (
@@ -127,10 +127,18 @@ export function ChatMessages({
             </span>
             <div className="chat-message-body">
               <div className="chat-message-bubble">
-                <p>
-                  {streamingMessage.length > 0 ? streamingMessage : "思考中..."}
-                  {streamingMessage.length > 0 ? <span className="chat-cursor">|</span> : null}
-                </p>
+                <div className="chat-markdown-content">
+                  {streamingMessage.length > 0 ? (
+                    <>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {streamingMessage}
+                      </ReactMarkdown>
+                      <span className="chat-cursor">|</span>
+                    </>
+                  ) : (
+                    <p>思考中...</p>
+                  )}
+                </div>
               </div>
             </div>
           </article>

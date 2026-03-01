@@ -29,6 +29,10 @@ const createSessionBodySchema = z.object({
   title: z.string().min(1).max(120).optional()
 });
 
+const updateSessionBodySchema = z.object({
+  title: z.string().min(1).max(120)
+});
+
 const createMessageBodySchema = z.object({
   content: z.string().min(1),
   model: z.string().min(1).optional()
@@ -135,6 +139,38 @@ export function createChatRouter(options: CreateChatRouterOptions = {}): Router 
       }
 
       return res.status(204).send();
+    }
+  );
+
+  chatRouter.patch(
+    "/sessions/:id",
+    validate({ params: sessionParamsSchema, body: updateSessionBodySchema }),
+    (req, res) => {
+      const updated = chatService.updateSessionTitle(req.params.id, req.body.title);
+      if (!updated) {
+        return res.status(404).json({ error: "Session not found" });
+      }
+      const session = chatService.getSessionWithMessages(req.params.id);
+      return res.json({ session: session!.session });
+    }
+  );
+
+  chatRouter.post(
+    "/sessions/:id/generate-title",
+    validate({ params: sessionParamsSchema }),
+    async (req, res) => {
+      try {
+        const title = await chatService.generateSmartTitle(req.params.id);
+        if (!title) return res.status(422).json({ error: "Insufficient messages for title generation" });
+        const session = chatService.getSessionWithMessages(req.params.id);
+        return res.json({ session: session!.session, title });
+      } catch (error) {
+        if (error instanceof ChatSessionNotFoundError) {
+          return res.status(404).json({ error: "Session not found" });
+        }
+        logger.error({ err: error }, "Smart title generation failed");
+        return res.status(500).json({ error: "Title generation failed" });
+      }
     }
   );
 

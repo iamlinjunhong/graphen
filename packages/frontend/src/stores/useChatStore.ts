@@ -16,6 +16,7 @@ interface ChatState {
   startStreaming: () => void;
   appendStreamingDelta: (delta: string) => void;
   finishStreaming: () => void;
+  updateSessionTitle: (sessionId: string, title: string) => void;
   reset: () => void;
 }
 
@@ -106,6 +107,12 @@ export const useChatStore = create<ChatState>((set) => ({
       isStreaming: false,
       streamingMessage: ""
     }),
+  updateSessionTitle: (sessionId, title) =>
+    set((state) => ({
+      sessions: state.sessions.map((s) =>
+        s.id === sessionId ? { ...s, title, updatedAt: new Date() } : s
+      )
+    })),
   reset: () =>
     set({
       sessions: [],

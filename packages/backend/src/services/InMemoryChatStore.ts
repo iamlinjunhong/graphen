@@ -41,6 +41,12 @@ export class InMemoryChatStore implements ChatStoreLike {
     this.sessionMessages.delete(id);
     return existed;
   }
+  updateSessionTitle(id: string, title: string): boolean {
+    const session = this.sessions.get(id);
+    if (!session) return false;
+    this.sessions.set(id, { ...session, title, updatedAt: new Date() });
+    return true;
+  }
 
   addMessage(input: {
     sessionId: string;

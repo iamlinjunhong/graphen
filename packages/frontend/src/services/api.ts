@@ -611,6 +611,36 @@ export const apiClient = {
 
     parseMessage(raw: ChatMessage): ChatMessage {
       return parseChatMessage(raw as RawChatMessage);
+    },
+
+    async updateSessionTitle(
+      id: string,
+      title: string,
+      signal?: AbortSignal
+    ): Promise<ChatSession> {
+      const result = await request<{ session: ChatSession }>(`/chat/sessions/${id}`, {
+        method: "PATCH",
+        json: { title },
+        signal
+      });
+      return parseChatSession(result.data.session as RawChatSession);
+    },
+
+    async generateSmartTitle(
+      id: string,
+      signal?: AbortSignal
+    ): Promise<{ session: ChatSession; title: string }> {
+      const result = await request<{ session: ChatSession; title: string }>(
+        `/chat/sessions/${id}/generate-title`,
+        {
+          method: "POST",
+          signal
+        }
+      );
+      return {
+        session: parseChatSession(result.data.session as RawChatSession),
+        title: result.data.title
+      };
     }
   },
 

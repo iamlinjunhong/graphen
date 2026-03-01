@@ -296,19 +296,30 @@ export function GraphView() {
       return;
     }
 
-    // Multiple staggered fitNodesInView calls to handle Reagraph's
-    // force-directed layout computation timing on first mount.
-    // The layout engine needs time to compute node positions; a single
-    // fixed delay is unreliable, so we retry at increasing intervals.
-    const delays = [300, 800, 1500, 3000];
-    const timers = delays.map((ms) =>
-      setTimeout(() => {
-        graphRef.current?.fitNodesInView();
-      }, ms)
-    );
-    graphRef.current?.fitNodesInView();
+    // Adaptive retry mechanism for fitNodesInView.
+    // Reagraph's force-directed layout needs variable time to compute
+    // node positions. Instead of fixed delays, we retry at a short
+    // interval until a maximum retry count is reached.
+    let cancelled = false;
+    let retryCount = 0;
+    const MAX_RETRIES = 20;
+    const RETRY_INTERVAL = 500; // ms
 
-    return () => timers.forEach(clearTimeout);
+    const tryFit = () => {
+      if (cancelled || retryCount >= MAX_RETRIES) return;
+      retryCount++;
+      graphRef.current?.fitNodesInView();
+      timerId = setTimeout(tryFit, RETRY_INTERVAL);
+    };
+
+    // Immediate first call, then start adaptive retries
+    graphRef.current?.fitNodesInView();
+    let timerId = setTimeout(tryFit, RETRY_INTERVAL);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timerId);
+    };
   }, [layoutMode, visibleReagraph.nodes.length]);
 
   const activeError = viewError ?? error;
@@ -368,21 +379,27 @@ export function GraphView() {
                   <span>Loading graph data...</span>
                 </div>
               )}
-              <GraphCanvas
-                graphRef={graphRef}
-                nodes={visibleReagraph.nodes}
-                edges={visibleReagraph.edges}
-                layoutMode={layoutMode}
-                selectedNodeId={selectedNodeId}
-                hoveredNodeId={hoveredNodeId}
-                highlightedNodeIds={searchContext.highlightedNodeIds}
-                onNodeClick={handleNodeClick}
-                onNodeHover={setHoveredNodeId}
-                onCanvasClick={() => {
-                  setHoveredNodeId(null);
-                  setSelectedNodeId(null);
-                }}
-              />
+              {visibleReagraph.nodes.length > 0 ? (
+                <GraphCanvas
+                  graphRef={graphRef}
+                  nodes={visibleReagraph.nodes}
+                  edges={visibleReagraph.edges}
+                  layoutMode={layoutMode}
+                  selectedNodeId={selectedNodeId}
+                  hoveredNodeId={hoveredNodeId}
+                  highlightedNodeIds={searchContext.highlightedNodeIds}
+                  onNodeClick={handleNodeClick}
+                  onNodeHover={setHoveredNodeId}
+                  onCanvasClick={() => {
+                    setHoveredNodeId(null);
+                    setSelectedNodeId(null);
+                  }}
+                />
+              ) : !isLoading ? (
+                <div className="graph-empty-state">
+                  <span>No graph data available</span>
+                </div>
+              ) : null}
               <GraphQualityPanel />
             </div>
           </section>

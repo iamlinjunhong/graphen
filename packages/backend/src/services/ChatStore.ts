@@ -26,6 +26,7 @@ export interface ChatStoreLike {
   }): ChatMessage;
   listMessagesBySession(sessionId: string): ChatMessage[];
   getSessionWithMessages(sessionId: string): { session: ChatSession; messages: ChatMessage[] } | null;
+  updateSessionTitle(id: string, title: string): boolean;
 }
 
 interface ChatSessionRow {
@@ -127,6 +128,13 @@ export class ChatStore implements ChatStoreLike {
       )
       .run(id);
 
+    return result.changes > 0;
+  }
+
+  updateSessionTitle(id: string, title: string): boolean {
+    const result = this.db
+      .prepare(`UPDATE chat_sessions SET title = @title, updated_at = @updated_at WHERE id = @id`)
+      .run({ id, title, updated_at: new Date().toISOString() });
     return result.changes > 0;
   }
 

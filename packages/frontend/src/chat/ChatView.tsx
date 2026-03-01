@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChatSession, ChatSource } from "@graphen/shared";
 import { useNavigate } from "react-router-dom";
 import { useChatStream } from "../hooks/useChatStream";
@@ -9,6 +9,7 @@ import { useGraphStore } from "../stores/useGraphStore";
 import { ChatInput } from "./ChatInput";
 import { ChatMessages } from "./ChatMessages";
 import { ChatSidebar } from "./ChatSidebar";
+import { generateTemporaryTitle } from "./titleGenerator";
 
 function createDefaultSessionTitle(): string {
   return `Session ${new Date().toLocaleString("zh-CN", {
@@ -32,7 +33,12 @@ export function ChatView() {
   const setCurrentSessionId = useChatStore((state) => state.setCurrentSessionId);
   const setMessages = useChatStore((state) => state.setMessages);
 
+  const updateSessionTitle = useChatStore((state) => state.updateSessionTitle);
+
   const setSelectedDocumentId = useDocumentStore((state) => state.setSelectedDocumentId);
+
+  const titleGeneratedRef = useRef<Set<string>>(new Set());
+  const smartTitleGeneratedRef = useRef<Set<string>>(new Set());
 
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
@@ -199,11 +205,38 @@ export function ChatView() {
         return;
       }
 
+      // Phase 1: Generate temporary title on first message
+      const existingMessages = messagesBySession[currentSessionId] ?? [];
+      if (existingMessages.length === 0 && !titleGeneratedRef.current.has(currentSessionId)) {
+        const tempTitle = generateTemporaryTitle(content);
+        if (tempTitle !== null) {
+          updateSessionTitle(currentSessionId, tempTitle);
+          titleGeneratedRef.current.add(currentSessionId);
+          // Fire-and-forget PATCH to persist title on backend
+          apiClient.chat.updateSessionTitle(currentSessionId, tempTitle).catch(() => {
+            // best-effort: silently ignore errors
+          });
+        }
+      }
+
       await sendMessage({
         sessionId: currentSessionId,
         content,
         model: selectedModel
       });
+
+      // Phase 2: Generate smart title after first assistant response completes
+      if (!smartTitleGeneratedRef.current.has(currentSessionId)) {
+        smartTitleGeneratedRef.current.add(currentSessionId);
+        apiClient.chat
+          .generateSmartTitle(currentSessionId)
+          .then((result) => {
+            updateSessionTitle(currentSessionId, result.title);
+          })
+          .catch(() => {
+            // Silently ignore — retain Temporary_Title
+          });
+      }
 
       // Reload current session messages from server to ensure consistency,
       // then refresh sidebar session list
@@ -220,7 +253,7 @@ export function ChatView() {
         // Sidebar refresh is best-effort
       }
     },
-    [currentSessionId, loadSessionDetail, selectedModel, sendMessage, setSessions]
+    [currentSessionId, loadSessionDetail, messagesBySession, selectedModel, sendMessage, setSessions, updateSessionTitle]
   );
 
   const handleOpenDocument = useCallback(
@@ -253,6 +286,17 @@ export function ChatView() {
   );
 
   const activeError = viewError ?? streamError;
+
+  const isEmpty = currentMessages.length === 0 && !isStreaming && !isConnecting;
+
+  const chatInputProps = {
+    disabled: !currentSessionId || isLoadingSessions || isLoadingMessages,
+    isStreaming: isStreaming || isConnecting,
+    models,
+    selectedModel,
+    onModelChange: setSelectedModel,
+    onSend: handleSend
+  };
 
   return (
     <section className="page-shell chat-page-shell" style={{ flex: 1, overflow: "hidden" }}>
@@ -296,25 +340,27 @@ export function ChatView() {
             </div>
           </div>
 
-          <ChatMessages
-            messages={currentMessages}
-            isStreaming={isStreaming || isConnecting}
-            streamingMessage={streamingMessage}
-            onOpenDocument={handleOpenDocument}
-            onOpenGraph={handleOpenGraph}
-            onGraphNodeClick={handleGraphNodeClick}
-          />
+          {isEmpty ? (
+            <div className="chat-empty-state">
+              <div className="chat-empty-greeting">今天你在想什么</div>
+              <ChatInput {...chatInputProps} />
+            </div>
+          ) : (
+            <>
+              <ChatMessages
+                messages={currentMessages}
+                isStreaming={isStreaming || isConnecting}
+                streamingMessage={streamingMessage}
+                onOpenDocument={handleOpenDocument}
+                onOpenGraph={handleOpenGraph}
+                onGraphNodeClick={handleGraphNodeClick}
+              />
 
-          <div className="chat-input-wrap">
-            <ChatInput
-              disabled={!currentSessionId || isLoadingSessions || isLoadingMessages}
-              isStreaming={isStreaming || isConnecting}
-              models={models}
-              selectedModel={selectedModel}
-              onModelChange={setSelectedModel}
-              onSend={handleSend}
-            />
-          </div>
+              <div className="chat-input-wrap">
+                <ChatInput {...chatInputProps} />
+              </div>
+            </>
+          )}
         </div>
       </div>
 
