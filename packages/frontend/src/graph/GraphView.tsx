@@ -296,12 +296,19 @@ export function GraphView() {
       return;
     }
 
-    // Immediate fit + delayed fit to handle layout computation timing
+    // Multiple staggered fitNodesInView calls to handle Reagraph's
+    // force-directed layout computation timing on first mount.
+    // The layout engine needs time to compute node positions; a single
+    // fixed delay is unreliable, so we retry at increasing intervals.
+    const delays = [300, 800, 1500, 3000];
+    const timers = delays.map((ms) =>
+      setTimeout(() => {
+        graphRef.current?.fitNodesInView();
+      }, ms)
+    );
     graphRef.current?.fitNodesInView();
-    const timer = setTimeout(() => {
-      graphRef.current?.fitNodesInView();
-    }, 1000);
-    return () => clearTimeout(timer);
+
+    return () => timers.forEach(clearTimeout);
   }, [layoutMode, visibleReagraph.nodes.length]);
 
   const activeError = viewError ?? error;

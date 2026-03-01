@@ -83,7 +83,46 @@ export async function validateUploadedFile(
   };
 }
 
+/**
+ * Attempt to recover a UTF-8 filename that was decoded as latin1 by multer.
+ * If the string contains typical latin1-mojibake byte patterns we re-encode
+ * it back to a Buffer using latin1 and then decode as utf-8.
+ */
+/**
+ * Attempt to recover a UTF-8 filename that was decoded as latin1 by multer.
+ *
+ * Multer decodes multipart filenames using latin1, so UTF-8 bytes get
+ * misinterpreted as latin1 code points (all in 0x00–0xFF range).
+ * If every character is within the latin1 range AND re-encoding as latin1
+ * then decoding as UTF-8 produces a valid shorter string, we use that.
+ *
+ * If the string already contains characters above U+00FF (e.g. CJK),
+ * it's already proper Unicode and we leave it alone.
+ */
+function recoverUtf8Filename(name: string): string {
+  // If any character is above the latin1 range, the string is already
+  // properly decoded Unicode — no recovery needed.
+  const isAllLatin1 = [...name].every((c) => c.codePointAt(0)! <= 0xff);
+  if (!isAllLatin1) {
+    return name;
+  }
+
+  try {
+    const buf = Buffer.from(name, "latin1");
+    const decoded = buf.toString("utf8");
+    // Valid UTF-8 recovery produces a shorter string (multi-byte sequences
+    // collapse) and contains no replacement character U+FFFD.
+    if (!decoded.includes("\uFFFD") && decoded.length < name.length) {
+      return decoded;
+    }
+  } catch {
+    // fall through – keep original
+  }
+  return name;
+}
+
 export function sanitizeFilename(filename: string): string {
-  const cleanBase = basename(filename).replace(/[^\w.-]/g, "_");
+  const recovered = recoverUtf8Filename(basename(filename));
+  const cleanBase = recovered.replace(/[^\p{L}\p{N}_.-]/gu, "_");
   return cleanBase.length > 0 ? cleanBase : "file";
 }
