@@ -178,6 +178,7 @@ export function useGraphData(options: UseGraphDataOptions = {}) {
       });
 
       setGraphData(subgraph);
+      return subgraph.documentNames;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to load graph data";
       setError(message);
@@ -243,6 +244,8 @@ export function useGraphData(options: UseGraphDataOptions = {}) {
       } else {
         setGraphData(trimmed);
       }
+
+      return subgraph.documentNames;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to load initial graph";
       setError(message);
@@ -271,6 +274,7 @@ export function useGraphData(options: UseGraphDataOptions = {}) {
         maxNodes: params.maxNodes ?? 120
       });
       appendSubgraph(subgraph);
+      return subgraph.documentNames;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to expand graph node";
       setError(message);

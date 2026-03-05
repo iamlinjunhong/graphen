@@ -10,6 +10,8 @@ import { ChatInput } from "./ChatInput";
 import { ChatMessages } from "./ChatMessages";
 import { ChatSidebar } from "./ChatSidebar";
 import { generateTemporaryTitle } from "./titleGenerator";
+import { useMemoryExtraction } from "../hooks/useMemoryExtraction";
+import { MemoryFactsPanel } from "../memory/MemoryFactsPanel";
 
 function createDefaultSessionTitle(): string {
   return `Session ${new Date().toLocaleString("zh-CN", {
@@ -55,6 +57,8 @@ export function ChatView() {
   } = useChatStream({
     defaultModel: selectedModel
   });
+
+  const { status: extractionStatus, facts, hasConflicted, startExtraction, reset: resetExtraction } = useMemoryExtraction();
 
   const loadModels = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -144,6 +148,10 @@ export function ChatView() {
     void loadSessionDetail(currentSessionId, controller.signal);
     return () => controller.abort();
   }, [currentSessionId, loadSessionDetail]);
+
+  useEffect(() => {
+    resetExtraction();
+  }, [currentSessionId, resetExtraction]);
 
   const filteredSessions = useMemo(() => {
     const normalized = searchQuery.trim().toLowerCase();
@@ -337,24 +345,39 @@ export function ChatView() {
                   ))}
                 </select>
               </label>
+              <button
+                type="button"
+                className="chat-memory-extract-btn"
+                disabled={!currentSessionId || isStreaming || isConnecting || extractionStatus === "extracting"}
+                onClick={() => { if (currentSessionId) startExtraction(currentSessionId); }}
+              >
+                {extractionStatus === "extracting" ? "提取中..." : "记忆提取"}
+              </button>
             </div>
           </div>
-
           {isEmpty ? (
             <div className="chat-empty-state">
+              {extractionStatus === "done" && (
+                <MemoryFactsPanel facts={facts} hasConflicted={hasConflicted} onDismiss={resetExtraction} />
+              )}
               <div className="chat-empty-greeting">今天你在想什么</div>
               <ChatInput {...chatInputProps} />
             </div>
           ) : (
             <>
-              <ChatMessages
-                messages={currentMessages}
-                isStreaming={isStreaming || isConnecting}
-                streamingMessage={streamingMessage}
-                onOpenDocument={handleOpenDocument}
-                onOpenGraph={handleOpenGraph}
-                onGraphNodeClick={handleGraphNodeClick}
-              />
+              <div className="chat-messages-wrap">
+                <ChatMessages
+                  messages={currentMessages}
+                  isStreaming={isStreaming || isConnecting}
+                  streamingMessage={streamingMessage}
+                  onOpenDocument={handleOpenDocument}
+                  onOpenGraph={handleOpenGraph}
+                  onGraphNodeClick={handleGraphNodeClick}
+                />
+                {extractionStatus === "done" && (
+                  <MemoryFactsPanel facts={facts} hasConflicted={hasConflicted} onDismiss={resetExtraction} />
+                )}
+              </div>
 
               <div className="chat-input-wrap">
                 <ChatInput {...chatInputProps} />

@@ -2044,6 +2044,7 @@ button.doc-item {
   display: flex;
   justify-content: flex-start;
   align-items: center;
+  gap: 8px;
   padding: 12px 0 12px 0;
   margin-bottom: 4px;
   flex-shrink: 0;
@@ -2076,9 +2077,44 @@ button.doc-item {
   color: var(--accent-primary);
 }
 
+.chat-memory-extract-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line-soft);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+  margin-left: 8px;
+}
+
+.chat-memory-extract-btn:hover:not(:disabled) {
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+.chat-memory-extract-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* =====================
    Chat Messages
    ===================== */
+
+.chat-messages-wrap {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
 
 .chat-messages-panel {
   min-height: 0;

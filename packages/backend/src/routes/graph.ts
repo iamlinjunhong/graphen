@@ -18,6 +18,7 @@ import type {
 } from "@graphen/shared";
 import { validate } from "../middleware/validator.js";
 import { ensureGraphStoreConnected, getGraphStoreSingleton } from "../runtime/graphRuntime.js";
+import { getPgPoolSingleton } from "../runtime/PgPool.js";
 import { logger } from "../utils/logger.js";
 
 const nodeParamsSchema = z.object({
@@ -65,6 +66,40 @@ const vectorSearchBodySchema = z.object({
 interface CreateGraphRouterOptions {
   store?: AbstractGraphStore;
   ensureStoreConnected?: () => Promise<void>;
+}
+
+/**
+ * Collect all unique sourceDocumentIds from nodes and resolve their filenames
+ * from the documents table in PostgreSQL.
+ */
+async function resolveDocumentNames(nodes: GraphNode[]): Promise<Record<string, string>> {
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const docIds = new Set<string>();
+  for (const node of nodes) {
+    for (const id of node.sourceDocumentIds) {
+      if (uuidPattern.test(id)) {
+        docIds.add(id);
+      }
+    }
+  }
+  if (docIds.size === 0) return {};
+
+  try {
+    const pool = getPgPoolSingleton();
+    const ids = Array.from(docIds);
+    const result = await pool.query<{ id: string; filename: string }>(
+      `SELECT id, filename FROM documents WHERE id = ANY($1::uuid[])`,
+      [ids]
+    );
+    const map: Record<string, string> = {};
+    for (const row of result.rows) {
+      map[row.id] = row.filename;
+    }
+    return map;
+  } catch (error) {
+    logger.warn({ err: error }, "Failed to resolve document names for graph response");
+    return {};
+  }
 }
 
 function parseCsv(input?: string): string[] | undefined {
@@ -215,7 +250,7 @@ export function createGraphRouter(options: CreateGraphRouterOptions = {}): Route
       res.setHeader("x-page", String(page));
       res.setHeader("x-page-size", String(pageSize));
 
-      const response: GraphNodesResponse = { nodes };
+      const response: GraphNodesResponse = { nodes, documentNames: await resolveDocumentNames(nodes) };
       res.json(response);
     }
   );
@@ -260,7 +295,10 @@ export function createGraphRouter(options: CreateGraphRouterOptions = {}): Route
 
       const subgraph = await store.getNeighbors(nodeId, depth);
       if (subgraph.nodes.length <= maxNodes) {
-        const response: GraphSubgraphResponse = subgraph;
+        const response: GraphSubgraphResponse = {
+          ...subgraph,
+          documentNames: await resolveDocumentNames(subgraph.nodes)
+        };
         return res.json(response);
       }
 
@@ -275,9 +313,64 @@ export function createGraphRouter(options: CreateGraphRouterOptions = {}): Route
 
       const response: GraphSubgraphResponse = {
         nodes: ordered,
-        edges
+        edges,
+        documentNames: await resolveDocumentNames(ordered)
       };
       return res.json(response);
+    }
+  );
+
+  // GET /api/graph/nodes/:id/facts — memory facts for a node
+  graphRouter.get(
+    "/nodes/:id/facts",
+    validate({ params: nodeParamsSchema }),
+    async (req, res) => {
+      try {
+        const nodeId = req.params.id ?? "";
+        const pgPool = getPgPoolSingleton();
+        const result = await pgPool.query(
+          `
+            SELECT
+              f.id,
+              f.entry_id AS "entryId",
+              COALESCE(f.subject_node_id, f.subject_text) AS "subjectNodeId",
+              f.subject_text AS "subjectText",
+              f.predicate,
+              f.object_node_id AS "objectNodeId",
+              f.object_text AS "objectText",
+              f.value_type AS "valueType",
+              f.normalized_fact_key AS "normalizedKey",
+              f.confidence,
+              e.review_status AS "reviewStatus",
+              f.fact_state AS "factState",
+              f.created_at AS "firstSeenAt",
+              f.updated_at AS "lastSeenAt",
+              f.created_at AS "createdAt",
+              f.updated_at AS "updatedAt",
+              f.deleted_at AS "deletedAt",
+              f.neo4j_synced AS "neo4jSynced",
+              f.neo4j_synced_at AS "neo4jSyncedAt",
+              f.neo4j_retry_count AS "neo4jRetryCount",
+              f.neo4j_last_error AS "neo4jLastError"
+            FROM memory_facts f
+            JOIN memory_entries e
+              ON e.id = f.entry_id
+            WHERE f.deleted_at IS NULL
+              AND f.fact_state = 'active'
+              AND (
+                f.subject_node_id = $1
+                OR lower(trim(f.subject_text)) = lower(trim($1))
+              )
+            ORDER BY f.confidence DESC, f.updated_at DESC
+            LIMIT 200
+          `,
+          [nodeId]
+        );
+        res.json(result.rows);
+      } catch (error) {
+        logger.error({ err: error }, "Failed to get node facts");
+        res.status(500).json({ error: "Failed to get node facts" });
+      }
     }
   );
 
@@ -323,7 +416,11 @@ export function createGraphRouter(options: CreateGraphRouterOptions = {}): Route
         query.minConfidence = minConfidence;
       }
 
-      const response: GraphSubgraphResponse = await store.getSubgraph(query);
+      const subgraph = await store.getSubgraph(query);
+      const response: GraphSubgraphResponse = {
+        ...subgraph,
+        documentNames: await resolveDocumentNames(subgraph.nodes)
+      };
       return res.json(response);
     }
   );
@@ -365,7 +462,17 @@ export function createGraphRouter(options: CreateGraphRouterOptions = {}): Route
       }
 
       const { vector, k, filter } = req.body as z.infer<typeof vectorSearchBodySchema>;
-      const results = await store.vectorSearch(vector, k, filter);
+      const vectorStore = store as unknown as {
+        vectorSearch?: (
+          vector: number[],
+          k: number,
+          filter?: Record<string, unknown>
+        ) => Promise<Array<{ node: GraphNode; score: number }>>;
+      };
+      if (typeof vectorStore.vectorSearch !== "function") {
+        return res.status(501).json({ error: "Vector search no longer supported by Neo4j store" });
+      }
+      const results = await vectorStore.vectorSearch(vector, k, filter);
 
       const response: GraphVectorSearchResponse = {
         results
@@ -503,5 +610,3 @@ export function createGraphRouter(options: CreateGraphRouterOptions = {}): Route
 
   return graphRouter;
 }
-
-export const graphRouter = createGraphRouter();

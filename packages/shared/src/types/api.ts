@@ -48,6 +48,7 @@ export interface GraphOverviewResponse {
 
 export interface GraphNodesResponse {
   nodes: GraphNode[];
+  documentNames?: Record<string, string>;
 }
 
 export interface GraphNodeResponse {
@@ -57,6 +58,7 @@ export interface GraphNodeResponse {
 export interface GraphSubgraphResponse {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  documentNames?: Record<string, string>;
 }
 
 export interface GraphSearchResponse {
@@ -104,6 +106,13 @@ export interface CreateChatMessageResponse {
   message: {
     content: string;
   };
+}
+
+export interface TriggerChatMemoryExtractionResponse {
+  sessionId: string;
+  scanned: number;
+  queued: number;
+  skipped: number;
 }
 
 export interface GetConfigResponse {
@@ -173,4 +182,3 @@ export interface GraphExportResponse {
   format: "jsonld" | "cypher";
   data: string;
 }
-

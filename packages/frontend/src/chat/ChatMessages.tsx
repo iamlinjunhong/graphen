@@ -111,6 +111,7 @@ export function ChatMessages({
                       ))}
                     </div>
                   ) : null}
+
                 </div>
 
                 <small>{formatMessageTime(message.createdAt)}</small>

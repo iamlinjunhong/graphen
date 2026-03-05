@@ -33,6 +33,7 @@ describe("documents api", () => {
       "/api/documents",
       createDocumentsRouter({
         store,
+        documentStore: store,
         pipeline: pipeline as unknown as DocumentPipeline,
         ensureStoreConnected: async () => {},
         uploadsDir,

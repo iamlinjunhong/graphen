@@ -31,8 +31,20 @@ export interface RAGContext {
 }
 
 export type QuestionIntent = "factual" | "analytical" | "comparative" | "exploratory";
+export type MemoryIntent = "identity" | "profile" | "preference" | "history" | "none";
+export type QueryTargetSubject = "user_self" | "assistant" | "third_party" | "unknown";
+export type ConflictPolicy = "latest_manual_wins" | "highest_confidence_wins" | "abstain";
+export type FastPathTrigger = "identity_self" | "preference_self" | "history_self" | "knowledge_query";
 
-export interface QuestionAnalysis {
+export interface RetrievalWeights {
+  entry_manual: number;
+  entry_chat: number;
+  entry_document: number;
+  graph_facts: number;
+  doc_chunks: number;
+}
+
+export interface QueryAnalysisV2 {
   intent: QuestionIntent;
   key_entities: string[];
   retrieval_strategy: {
@@ -43,7 +55,15 @@ export interface QuestionAnalysis {
     need_aggregation: boolean;
   };
   rewritten_query: string;
+  memory_intent: MemoryIntent;
+  target_subject: QueryTargetSubject;
+  must_use_memory: boolean;
+  retrieval_weights: RetrievalWeights;
+  conflict_policy: ConflictPolicy;
+  fast_path_trigger?: FastPathTrigger | undefined;
 }
+
+export type QuestionAnalysis = QueryAnalysisV2;
 
 export interface LLMConfig {
   apiKey: string;
@@ -100,19 +120,26 @@ export interface InferredRelationRaw {
   confidence: number;
 }
 
+export interface LLMRequestOptions {
+  documentId?: string;
+  promptName?: string;
+  promptVersion?: string;
+  metadata?: Record<string, unknown>;
+}
+
 export interface LLMServiceLike {
   extractEntitiesAndRelations(
     text: string,
     schema?: ExtractionSchema,
-    options?: { documentId?: string }
+    options?: LLMRequestOptions
   ): Promise<ExtractionResult>;
   chatCompletion(
     messages: ChatMessage[],
     context: RAGContext,
-    options?: { documentId?: string }
+    options?: LLMRequestOptions
   ): AsyncGenerator<string>;
-  generateEmbedding(text: string, options?: { documentId?: string }): Promise<number[]>;
-  analyzeQuestion(question: string, options?: { documentId?: string }): Promise<QuestionAnalysis>;
+  generateEmbedding(text: string, options?: LLMRequestOptions): Promise<number[]>;
+  analyzeQuestion(question: string, options?: LLMRequestOptions): Promise<QuestionAnalysis>;
   inferRelations?(triples: string): Promise<InferredRelationRaw[]>;
   estimateTokens?(text: string): number;
 }

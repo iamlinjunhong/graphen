@@ -1,0 +1,121 @@
+.memory-edit-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 130;
+  background: rgba(15, 23, 42, 0.45);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+
+.memory-edit-dialog {
+  width: min(620px, 100%);
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+  background: var(--bg-surface);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  overflow: hidden;
+}
+
+.memory-edit-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.memory-edit-header h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.memory-edit-subtitle {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.memory-edit-close {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  width: 30px;
+  height: 30px;
+  cursor: pointer;
+}
+
+.memory-edit-body {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+}
+
+.memory-edit-body label {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.memory-edit-body textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 160px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  padding: 10px;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.memory-edit-body textarea:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px rgba(217, 119, 87, 0.15);
+}
+
+.memory-edit-body p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.memory-edit-footer {
+  border-top: 1px solid var(--line-soft);
+  padding: 12px 16px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.memory-edit-cancel,
+.memory-edit-submit {
+  border-radius: 8px;
+  padding: 7px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.memory-edit-cancel {
+  border: 1px solid var(--line-soft);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+}
+
+.memory-edit-submit {
+  border: none;
+  background: var(--accent-primary);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.memory-edit-submit:disabled,
+.memory-edit-cancel:disabled,
+.memory-edit-close:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}

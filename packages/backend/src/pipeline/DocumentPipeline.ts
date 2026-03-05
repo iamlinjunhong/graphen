@@ -3,11 +3,13 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { EventEmitter } from "node:events";
 import { RecursiveCharacterTextSplitter } from "langchain/text_splitter";
-import type { AbstractGraphStore, Document, DocumentChunk } from "@graphen/shared";
+import type { AbstractGraphStore, CandidateFact, Document, DocumentChunk, MemoryServiceLike } from "@graphen/shared";
 import { appConfig } from "../config.js";
 import { MarkdownParser, PDFParser, TextParser } from "../parsers/index.js";
+import type { MemoryExtractor } from "../services/MemoryExtractor.js";
 import type { LLMServiceLike } from "../services/llmTypes.js";
 import { EntityResolver } from "./EntityResolver.js";
+import { logger } from "../utils/logger.js";
 import type {
   ChunkExtractionResult,
   DocumentPipelineOptions,
@@ -27,16 +29,29 @@ const defaultOptions: DocumentPipelineOptions = {
   embeddingConcurrency: 5
 };
 
+interface DocumentWriteStoreLike {
+  saveDocument(doc: Document): Promise<void>;
+  saveChunks(chunks: DocumentChunk[]): Promise<void>;
+}
+
 export class DocumentPipeline {
   private readonly eventEmitter: EventEmitter;
   private readonly options: DocumentPipelineOptions;
   private readonly entityResolver: EntityResolver;
+  private readonly memoryService: MemoryServiceLike | undefined;
+  private readonly memoryExtractor: MemoryExtractor | undefined;
+  private readonly documentStore: DocumentWriteStoreLike;
 
   constructor(
     private readonly store: AbstractGraphStore,
     private readonly llmService: LLMServiceLike,
     eventEmitter?: EventEmitter,
-    options: Partial<DocumentPipelineOptions> = {}
+    options: Partial<DocumentPipelineOptions> = {},
+    deps?: {
+      memoryService?: MemoryServiceLike;
+      memoryExtractor?: MemoryExtractor;
+      documentStore?: DocumentWriteStoreLike;
+    }
   ) {
     this.eventEmitter = eventEmitter ?? new EventEmitter();
     this.options = {
@@ -44,6 +59,16 @@ export class DocumentPipeline {
       ...options
     };
     this.entityResolver = new EntityResolver();
+    this.memoryService = deps?.memoryService;
+    this.memoryExtractor = deps?.memoryExtractor;
+    this.documentStore = deps?.documentStore ?? {
+      saveDocument: async () => {
+        throw new Error("DocumentPipeline requires a documentStore for PG document writes");
+      },
+      saveChunks: async () => {
+        throw new Error("DocumentPipeline requires a documentStore for PG chunk writes");
+      }
+    };
   }
 
   getEventEmitter(): EventEmitter {
@@ -78,8 +103,15 @@ export class DocumentPipeline {
 
       await this.reconcileWithExistingNodes(resolvedGraph);
 
+      if (this.memoryExtractor) {
+        this.enqueueMemoryExtractions(document.id, chunks);
+      } else {
+        // Legacy fallback used by tests and in-memory mode.
+        this.generateMemoryFacts(resolvedGraph, document.id);
+      }
+
       this.emitStatus(document.id, "embedding", 80);
-      await this.generateEmbeddings(document.id, resolvedGraph, chunks);
+      await this.generateEmbeddings(document.id, chunks);
 
       this.emitStatus(document.id, "saving", 90);
       const savedDocument = await this.saveToStore(document, chunks, resolvedGraph);
@@ -197,21 +229,8 @@ export class DocumentPipeline {
 
   private async generateEmbeddings(
     documentId: string,
-    resolvedGraph: ResolvedGraph,
     chunks: DocumentChunk[]
   ): Promise<void> {
-    await runWithConcurrency(
-      resolvedGraph.nodes,
-      this.options.embeddingConcurrency,
-      async (node) => {
-        const embedding = await this.llmService.generateEmbedding(
-          `${node.name}\n${node.description}`,
-          { documentId }
-        );
-        node.embedding = embedding;
-      }
-    );
-
     await runWithConcurrency(chunks, this.options.embeddingConcurrency, async (chunk) => {
       chunk.embedding = await this.llmService.generateEmbedding(chunk.content, {
         documentId
@@ -239,19 +258,97 @@ export class DocumentPipeline {
       metadata: mergedMetadata
     };
 
-    await this.store.saveDocument(savedDocument);
-    await this.store.saveChunks(chunks);
-    await this.store.saveNodes(resolvedGraph.nodes);
-    await this.store.saveEdges(resolvedGraph.edges);
+    await this.documentStore.saveDocument(savedDocument);
+    await this.documentStore.saveChunks(chunks);
 
-    for (const node of resolvedGraph.nodes) {
-      if (node.embedding && node.embedding.length > 0) {
-        await this.store.saveEmbeddings(node.id, node.embedding);
-      }
+    // Save resolved graph nodes and edges to the graph store (Neo4j)
+    if (resolvedGraph.nodes.length > 0) {
+      await this.store.saveNodes(resolvedGraph.nodes);
+    }
+    if (resolvedGraph.edges.length > 0) {
+      await this.store.saveEdges(resolvedGraph.edges);
     }
 
     return savedDocument;
   }
+
+  private enqueueMemoryExtractions(documentId: string, chunks: DocumentChunk[]): void {
+    if (!this.memoryExtractor || chunks.length === 0) {
+      return;
+    }
+
+    let enqueued = 0;
+    for (const chunk of chunks) {
+      const message = chunk.content.trim();
+      if (message.length === 0) {
+        continue;
+      }
+
+      enqueued += 1;
+      void this.memoryExtractor.enqueue({
+        message,
+        sourceType: "document",
+        documentId,
+        chunkId: chunk.id
+      }).catch((error) => {
+        logger.warn(
+          { err: error, documentId, chunkId: chunk.id },
+          "Document memory extraction failed"
+        );
+      });
+    }
+
+    if (enqueued > 0) {
+      logger.info({ documentId, enqueued }, "Document memory extraction enqueued");
+    }
+  }
+
+  /**
+   * Convert resolved edges to MemoryFact candidates and merge into memory store.
+   * Each edge becomes a fact: sourceNode → relationType → targetNode.
+   * Reparse is handled by MemoryService.mergeFacts() dedup logic:
+   *  - auto facts get confidence updated + new evidence appended
+   *  - confirmed/modified facts only get new evidence appended
+   */
+  private generateMemoryFacts(resolvedGraph: ResolvedGraph, documentId: string): void {
+    if (!this.memoryService || resolvedGraph.edges.length === 0) return;
+
+    const nodeById = new Map(resolvedGraph.nodes.map((n) => [n.id, n]));
+    const now = new Date().toISOString();
+    const candidates: CandidateFact[] = [];
+
+    for (const edge of resolvedGraph.edges) {
+      const sourceNode = nodeById.get(edge.sourceNodeId);
+      const targetNode = nodeById.get(edge.targetNodeId);
+      if (!sourceNode || !targetNode) continue;
+
+      candidates.push({
+        subjectNodeId: sourceNode.name,
+        predicate: edge.relationType,
+        objectNodeId: targetNode.name,
+        valueType: "entity",
+        confidence: edge.confidence,
+        evidence: {
+          sourceType: "document",
+          documentId,
+          extractedAt: now,
+        },
+      });
+    }
+
+    if (candidates.length === 0) return;
+
+    try {
+      const result = this.memoryService.mergeFacts(candidates);
+      logger.info(
+        { documentId, created: result.created, updated: result.updated, conflicted: result.conflicted },
+        "Document memory facts generated"
+      );
+    } catch (error) {
+      logger.warn({ err: error, documentId }, "Memory fact generation failed, continuing without memory");
+    }
+  }
+
   /**
    * Cross-document entity fusion: query Neo4j for existing nodes with the same
    * canonical key (type:normalizedName). If found, remap the resolved node's ID
@@ -271,7 +368,7 @@ export class DocumentPipeline {
     }));
 
     // Query the store — only if it supports findNodeIdsByCanonicalKeys
-    const storeAny = this.store as Record<string, unknown>;
+    const storeAny = this.store as unknown as Record<string, unknown>;
     if (typeof storeAny.findNodeIdsByCanonicalKeys !== "function") {
       return;
     }

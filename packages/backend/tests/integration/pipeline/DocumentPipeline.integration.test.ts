@@ -40,15 +40,23 @@ describe("DocumentPipeline integration", () => {
       phases.push(event.phase);
     });
 
-    const pipeline = new DocumentPipeline(store, llm, emitter, {
-      cacheDir,
-      chunkSize: 40,
-      chunkOverlap: 5,
-      maxChunksPerDocument: 20,
-      maxEstimatedTokens: 10_000,
-      extractionConcurrency: 3,
-      embeddingConcurrency: 3
-    });
+    const pipeline = new DocumentPipeline(
+      store,
+      llm,
+      emitter,
+      {
+        cacheDir,
+        chunkSize: 40,
+        chunkOverlap: 5,
+        maxChunksPerDocument: 20,
+        maxEstimatedTokens: 10_000,
+        extractionConcurrency: 3,
+        embeddingConcurrency: 3
+      },
+      {
+        documentStore: store
+      }
+    );
 
     const doc = buildDocument();
     const text =
@@ -57,9 +65,8 @@ describe("DocumentPipeline integration", () => {
 
     expect(result.chunks.length).toBeGreaterThanOrEqual(2);
     expect(result.resolvedGraph.nodes.length).toBeGreaterThanOrEqual(2);
-    expect(store.savedNodes.length).toBeGreaterThanOrEqual(2);
-    expect(store.savedEdges.length).toBeGreaterThanOrEqual(1);
     expect(store.savedDocuments.length).toBe(1);
+    expect(store.savedChunks.length).toBe(result.chunks.length);
 
     expect(phases).toEqual([
       "parsing",
@@ -84,13 +91,21 @@ describe("DocumentPipeline integration", () => {
 
     const store = new FakeGraphStore();
     const llm = new FakeLLMService();
-    const pipeline = new DocumentPipeline(store, llm, undefined, {
-      cacheDir,
-      chunkSize: 50,
-      chunkOverlap: 0,
-      maxChunksPerDocument: 20,
-      maxEstimatedTokens: 10_000
-    });
+    const pipeline = new DocumentPipeline(
+      store,
+      llm,
+      undefined,
+      {
+        cacheDir,
+        chunkSize: 50,
+        chunkOverlap: 0,
+        maxChunksPerDocument: 20,
+        maxEstimatedTokens: 10_000
+      },
+      {
+        documentStore: store
+      }
+    );
 
     const doc = buildDocument();
     const text = "Graphen uses Neo4j. Neo4j stores vectors.";
@@ -112,13 +127,21 @@ describe("DocumentPipeline integration", () => {
 
     const store = new FakeGraphStore();
     const llm = new FakeLLMService();
-    const pipeline = new DocumentPipeline(store, llm, undefined, {
-      cacheDir,
-      chunkSize: 10,
-      chunkOverlap: 0,
-      maxChunksPerDocument: 1,
-      maxEstimatedTokens: 10_000
-    });
+    const pipeline = new DocumentPipeline(
+      store,
+      llm,
+      undefined,
+      {
+        cacheDir,
+        chunkSize: 10,
+        chunkOverlap: 0,
+        maxChunksPerDocument: 1,
+        maxEstimatedTokens: 10_000
+      },
+      {
+        documentStore: store
+      }
+    );
 
     const doc = buildDocument();
     await expect(
@@ -199,7 +222,18 @@ class FakeLLMService implements LLMServiceLike {
         vector_top_k: 3,
         need_aggregation: false
       },
-      rewritten_query: "unused"
+      rewritten_query: "unused",
+      memory_intent: "none",
+      target_subject: "unknown",
+      must_use_memory: false,
+      retrieval_weights: {
+        entry_manual: 0.2,
+        entry_chat: 0.2,
+        entry_document: 0.4,
+        graph_facts: 0.8,
+        doc_chunks: 0.8
+      },
+      conflict_policy: "latest_manual_wins"
     };
   }
 

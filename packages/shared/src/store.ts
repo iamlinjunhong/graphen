@@ -35,6 +35,11 @@ export interface GraphNodeStore {
   getNodesByType(type: string, limit?: number, offset?: number): Promise<GraphNode[]>;
   searchNodes(query: string, limit?: number): Promise<SearchResult[]>;
   deleteNode(id: string): Promise<void>;
+  /**
+   * Remove all graph data (nodes/edges) exclusively sourced by the given document.
+   * For nodes/edges also sourced by other documents, only strip the documentId reference.
+   */
+  removeDocumentData?(docId: string): Promise<void>;
 }
 
 export interface GraphEdgeStore {
@@ -69,9 +74,7 @@ export interface DocumentStore {
 export interface AbstractGraphStore
   extends GraphNodeStore,
     GraphEdgeStore,
-    GraphQueryStore,
-    VectorStore,
-    DocumentStore {
+    GraphQueryStore {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   healthCheck(): Promise<boolean>;

@@ -8,10 +8,6 @@ import neo4j, {
 } from "neo4j-driver";
 import type {
   AbstractGraphStore,
-  ChunkSearchResult,
-  Document,
-  DocumentChunk,
-  DocumentStatus,
   GraphEdge,
   GraphNode,
   GraphStats,
@@ -324,6 +320,40 @@ export class Neo4jGraphStore implements AbstractGraphStore {
     });
   }
 
+  /**
+   * Remove all graph data exclusively sourced by the given document.
+   * Nodes/edges with only this document in sourceDocumentIds are deleted.
+   * Nodes/edges also sourced by other documents just have the docId stripped.
+   */
+  async removeDocumentData(docId: string): Promise<void> {
+    await this.withSession("WRITE", async (session) => {
+      // Delete edges exclusively sourced by this document
+      await session.run(
+        `
+        MATCH ()-[r:RELATED_TO]-()
+        WHERE $docId IN r.sourceDocumentIds
+        WITH r, [x IN r.sourceDocumentIds WHERE x <> $docId] AS remaining
+        FOREACH (_ IN CASE WHEN size(remaining) = 0 THEN [1] ELSE [] END | DELETE r)
+        FOREACH (_ IN CASE WHEN size(remaining) > 0 THEN [1] ELSE [] END | SET r.sourceDocumentIds = remaining)
+        `,
+        { docId }
+      );
+
+      // Delete nodes exclusively sourced by this document
+      await session.run(
+        `
+        MATCH (e:Entity)
+        WHERE $docId IN e.sourceDocumentIds
+        WITH e, [x IN e.sourceDocumentIds WHERE x <> $docId] AS remaining
+        FOREACH (_ IN CASE WHEN size(remaining) = 0 THEN [1] ELSE [] END | DETACH DELETE e)
+        FOREACH (_ IN CASE WHEN size(remaining) > 0 THEN [1] ELSE [] END | SET e.sourceDocumentIds = remaining)
+        `,
+        { docId }
+      );
+    });
+  }
+
+
   async getNeighbors(nodeId: string, depth = 1): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
     const safeDepth = Math.max(1, Math.min(depth, 5));
 
@@ -479,198 +509,6 @@ export class Neo4jGraphStore implements AbstractGraphStore {
         return { nodes, edges };
       });
     }
-
-  async saveEmbeddings(nodeId: string, embedding: number[]): Promise<void> {
-    await this.withSession("WRITE", async (session) => {
-      await session.run(
-        `
-        MATCH (e:Entity {id: $nodeId})
-        SET e.embedding = $embedding
-        `,
-        { nodeId, embedding }
-      );
-    });
-  }
-
-  async vectorSearch(
-    vector: number[],
-    k: number,
-    filter?: Record<string, unknown>
-  ): Promise<SearchResult[]> {
-    if (vector.length === 0) {
-      return [];
-    }
-
-    const safeK = Math.max(1, k);
-
-    return this.withSession("READ", async (session) => {
-      const result = await session.run(
-        `
-        CALL db.index.vector.queryNodes('entity_embedding', $k, $vector)
-        YIELD node, score
-        WITH node, score
-        WHERE $filter IS NULL OR all(key IN keys($filter) WHERE node[key] = $filter[key])
-        RETURN node, score
-        `,
-        {
-          vector,
-          k: neo4j.int(safeK),
-          filter: filter ?? null
-        }
-      );
-
-      return result.records.map((record) => ({
-        node: this.mapGraphNode(record.get("node") as Node),
-        score: this.toNumber(record.get("score"))
-      }));
-    });
-  }
-
-  async chunkVectorSearch(vector: number[], k: number): Promise<ChunkSearchResult[]> {
-    if (vector.length === 0) {
-      return [];
-    }
-
-    const safeK = Math.max(1, k);
-
-    return this.withSession("READ", async (session) => {
-      const result = await session.run(
-        `
-        CALL db.index.vector.queryNodes('chunk_embedding', $k, $vector)
-        YIELD node, score
-        RETURN node, score
-        `,
-        { vector, k: neo4j.int(safeK) }
-      );
-
-      return result.records.map((record) => ({
-        chunk: this.mapDocumentChunk(record.get("node") as Node),
-        score: this.toNumber(record.get("score"))
-      }));
-    });
-  }
-
-  async saveDocument(doc: Document): Promise<void> {
-    await this.withSession("WRITE", async (session) => {
-      await session.run(
-        `
-        MERGE (d:Document {id: $doc.id})
-        SET
-          d.filename = $doc.filename,
-          d.fileType = $doc.fileType,
-          d.fileSize = $doc.fileSize,
-          d.status = $doc.status,
-          d.uploadedAt = $doc.uploadedAt,
-          d.parsedAt = $doc.parsedAt,
-          d.metadata = $doc.metadata,
-          d.errorMessage = $doc.errorMessage
-        `,
-        {
-          doc: this.serializeDocument(doc)
-        }
-      );
-    });
-  }
-
-  async getDocuments(): Promise<Document[]> {
-    return this.withSession("READ", async (session) => {
-      const result = await session.run(
-        `
-        MATCH (d:Document)
-        RETURN d
-        ORDER BY d.uploadedAt DESC
-        `
-      );
-
-      return result.records.map((record) => this.mapDocument(record.get("d") as Node));
-    });
-  }
-
-  async deleteDocumentAndRelated(docId: string): Promise<void> {
-    await this.withSession("WRITE", async (session) => {
-      await session.run(
-        `
-        MATCH (d:Document {id: $docId})
-        OPTIONAL MATCH (d)-[:HAS_CHUNK]->(chunk:Chunk)
-        DETACH DELETE d, chunk
-        `,
-        { docId }
-      );
-
-      await session.run(
-        `
-        MATCH (e:Entity)
-        WHERE $docId IN coalesce(e.sourceDocumentIds, [])
-        SET e.sourceDocumentIds = [id IN e.sourceDocumentIds WHERE id <> $docId]
-        WITH e
-        WHERE size(coalesce(e.sourceDocumentIds, [])) = 0
-        DETACH DELETE e
-        `,
-        { docId }
-      );
-
-      await session.run(
-        `
-        MATCH ()-[r:RELATED_TO]->()
-        WHERE $docId IN coalesce(r.sourceDocumentIds, [])
-        SET r.sourceDocumentIds = [id IN r.sourceDocumentIds WHERE id <> $docId]
-        WITH r
-        WHERE size(coalesce(r.sourceDocumentIds, [])) = 0
-        DELETE r
-        `,
-        { docId }
-      );
-    });
-  }
-
-  async saveChunks(chunks: DocumentChunk[]): Promise<void> {
-    if (chunks.length === 0) {
-      return;
-    }
-
-    await this.withSession("WRITE", async (session) => {
-      await session.run(
-        `
-        UNWIND $chunks AS chunk
-        MERGE (c:Chunk {id: chunk.id})
-        SET
-          c.documentId = chunk.documentId,
-          c.content = chunk.content,
-          c.index = chunk.index,
-          c.embedding = chunk.embedding,
-          c.metadata = chunk.metadata
-        MERGE (d:Document {id: chunk.documentId})
-        ON CREATE SET
-          d.filename = chunk.documentId,
-          d.fileType = "txt",
-          d.fileSize = 0,
-          d.status = "parsing",
-          d.uploadedAt = chunk.createdAt,
-          d.metadata = '{}'
-        MERGE (d)-[rel:HAS_CHUNK]->(c)
-        SET rel.index = chunk.index
-        `,
-        {
-          chunks: chunks.map((chunk) => this.serializeChunk(chunk))
-        }
-      );
-    });
-  }
-
-  async getChunksByDocument(docId: string): Promise<DocumentChunk[]> {
-    return this.withSession("READ", async (session) => {
-      const result = await session.run(
-        `
-        MATCH (c:Chunk {documentId: $docId})
-        RETURN c
-        ORDER BY c.index ASC
-        `,
-        { docId }
-      );
-
-      return result.records.map((record) => this.mapDocumentChunk(record.get("c") as Node));
-    });
-  }
 
   async getStats(): Promise<GraphStats> {
       // T8: Return cached stats if still valid
@@ -855,6 +693,12 @@ export class Neo4jGraphStore implements AbstractGraphStore {
     });
   }
 
+  async runCypher(query: string, params: Record<string, unknown> = {}): Promise<void> {
+    await this.withSession("WRITE", async (session) => {
+      await session.run(query, params);
+    });
+  }
+
 
   private withSession<T>(accessMode: AccessMode, fn: (session: Session) => Promise<T>): Promise<T> {
     const sessionConfig: SessionConfig = {
@@ -926,96 +770,6 @@ export class Neo4jGraphStore implements AbstractGraphStore {
     };
   }
 
-  private mapDocument(node: Node): Document {
-    const props = this.asRecord(node.properties);
-    const metadataRaw = props.metadata;
-    const metadataRecord = typeof metadataRaw === "string"
-      ? this.asRecord((() => { try { return JSON.parse(metadataRaw); } catch { return {}; } })())
-      : this.asRecord(metadataRaw);
-    const metadata: Document["metadata"] = {};
-
-    const pageCount = this.toOptionalNumber(metadataRecord.pageCount);
-    const wordCount = this.toOptionalNumber(metadataRecord.wordCount);
-    const chunkCount = this.toOptionalNumber(metadataRecord.chunkCount);
-    const entityCount = this.toOptionalNumber(metadataRecord.entityCount);
-    const edgeCount = this.toOptionalNumber(metadataRecord.edgeCount);
-
-    if (pageCount !== undefined) {
-      metadata.pageCount = pageCount;
-    }
-    if (wordCount !== undefined) {
-      metadata.wordCount = wordCount;
-    }
-    if (chunkCount !== undefined) {
-      metadata.chunkCount = chunkCount;
-    }
-    if (entityCount !== undefined) {
-      metadata.entityCount = entityCount;
-    }
-    if (edgeCount !== undefined) {
-      metadata.edgeCount = edgeCount;
-    }
-
-    const document: Document = {
-      id: this.toString(props.id, node.elementId),
-      filename: this.toString(props.filename, ""),
-      fileType: this.toDocumentFileType(props.fileType),
-      fileSize: this.toNumber(props.fileSize, 0),
-      status: this.toDocumentStatus(props.status),
-      uploadedAt: this.toDate(props.uploadedAt, new Date(0)),
-      metadata
-    };
-
-    const parsedAt = this.toOptionalDate(props.parsedAt);
-    if (parsedAt) {
-      document.parsedAt = parsedAt;
-    }
-
-    const errorMessage = this.toOptionalString(props.errorMessage);
-    if (errorMessage !== undefined) {
-      document.errorMessage = errorMessage;
-    }
-
-    return document;
-  }
-
-  private mapDocumentChunk(node: Node): DocumentChunk {
-    const props = this.asRecord(node.properties);
-    const chunkMetaRaw = props.metadata;
-    const metadataRecord = typeof chunkMetaRaw === "string"
-      ? this.asRecord((() => { try { return JSON.parse(chunkMetaRaw); } catch { return {}; } })())
-      : this.asRecord(chunkMetaRaw);
-    const metadata: DocumentChunk["metadata"] = {};
-
-    const pageNumber = this.toOptionalNumber(metadataRecord.pageNumber);
-    const startLine = this.toOptionalNumber(metadataRecord.startLine);
-    const endLine = this.toOptionalNumber(metadataRecord.endLine);
-
-    if (pageNumber !== undefined) {
-      metadata.pageNumber = pageNumber;
-    }
-    if (startLine !== undefined) {
-      metadata.startLine = startLine;
-    }
-    if (endLine !== undefined) {
-      metadata.endLine = endLine;
-    }
-
-    const chunk: DocumentChunk = {
-      id: this.toString(props.id, node.elementId),
-      documentId: this.toString(props.documentId, ""),
-      content: this.toString(props.content, ""),
-      index: this.toNumber(props.index, 0),
-      metadata
-    };
-
-    const embedding = this.toOptionalNumberArray(props.embedding);
-    if (embedding) {
-      chunk.embedding = embedding;
-    }
-
-    return chunk;
-  }
 
   private serializeNode(node: GraphNode): Record<string, unknown> {
     return {
@@ -1047,34 +801,6 @@ export class Neo4jGraphStore implements AbstractGraphStore {
       createdAt: edge.createdAt.toISOString()
     };
   }
-
-  private serializeDocument(doc: Document): Record<string, unknown> {
-    return {
-      id: doc.id,
-      filename: doc.filename,
-      fileType: doc.fileType,
-      fileSize: doc.fileSize,
-      status: doc.status,
-      uploadedAt: doc.uploadedAt.toISOString(),
-      parsedAt: doc.parsedAt ? doc.parsedAt.toISOString() : null,
-      metadata: JSON.stringify(doc.metadata ?? {}),
-      errorMessage: doc.errorMessage ?? null
-    };
-  }
-
-  private serializeChunk(chunk: DocumentChunk): Record<string, unknown> {
-    return {
-      id: chunk.id,
-      documentId: chunk.documentId,
-      content: chunk.content,
-      index: chunk.index,
-      embedding: chunk.embedding ?? null,
-      metadata: JSON.stringify(chunk.metadata ?? {}),
-      createdAt: new Date().toISOString()
-    };
-  }
-
-
 
   private toDistributionMap(result: { records: Array<{ get: (field: string) => unknown }> }): Record<string, number> {
     const distribution: Record<string, number> = {};
@@ -1171,26 +897,5 @@ export class Neo4jGraphStore implements AbstractGraphStore {
       return undefined;
     }
     return parsed;
-  }
-
-  private toDocumentStatus(value: unknown): DocumentStatus {
-    const status = this.toString(value, "error");
-    const statuses: DocumentStatus[] = [
-      "uploading",
-      "parsing",
-      "extracting",
-      "embedding",
-      "completed",
-      "error"
-    ];
-    return statuses.includes(status as DocumentStatus) ? (status as DocumentStatus) : "error";
-  }
-
-  private toDocumentFileType(value: unknown): Document["fileType"] {
-    const type = this.toString(value, "txt");
-    if (type === "pdf" || type === "md" || type === "txt") {
-      return type;
-    }
-    return "txt";
   }
 }

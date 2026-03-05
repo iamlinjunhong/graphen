@@ -1,0 +1,1114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GraphRAG - Knowledge OS</title>
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Graph Library: 3D Force Graph -->
+    <script src="https://unpkg.com/3d-force-graph"></script>
+    <style>
+        :root {
+            /* Authentic Claude Theme Palette */
+            --bg-color: #FAF9F5;         /* True Claude paper cream */
+            --glass-bg: rgba(250, 249, 245, 0.85);
+            --topbar-bg: #FAF9F5;
+            
+            --primary-color: #D97757;    /* True Claude Terracotta/Peach */
+            --primary-light: #F2E5DF;    /* Soft terracotta */
+            --primary-hover: #C36141;    
+            
+            --secondary-color: #B0AEA5;  
+            
+            --text-main: #141413;        /* Deep Charcoal */
+            --text-muted: #87867F;       /* Warm Gray */
+            --border-color: #E8E6DD;     /* Subtle Gray / border */
+            
+            --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.04);
+            --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
+            --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.08);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Inter', -apple-system, sans-serif;
+        }
+
+        h1, h2, h3, .logo-area, .page-title {
+            font-family: 'Tiermina', 'Reckless', ui-serif, Georgia, serif;
+            letter-spacing: -0.01em;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            /* Subtly dynamic background for warm theme */
+            background-image: 
+                radial-gradient(circle at 15% 50%, rgba(217, 119, 87, 0.04), transparent 30%),
+                radial-gradient(circle at 85% 30%, rgba(135, 134, 127, 0.03), transparent 30%);
+        }
+
+        /* --- Top Navigation Bar --- */
+        .top-bar {
+            height: 64px;
+            background: var(--topbar-bg);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 24px;
+            box-shadow: var(--shadow-sm);
+            z-index: 200;
+        }
+
+        .logo-area {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--text-main);
+            letter-spacing: -0.5px;
+        }
+
+        .logo-icon {
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 1.1rem;
+            box-shadow: 0 2px 8px rgba(234, 88, 12, 0.3);
+        }
+
+        .user-profile {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .nav-tools {
+            display: flex;
+            gap: 12px;
+            color: var(--text-muted);
+        }
+        
+        .nav-tools i {
+            cursor: pointer;
+            padding: 8px;
+            border-radius: 6px;
+            transition: 0.2s;
+        }
+        
+        .nav-tools i:hover {
+            background: var(--primary-light);
+            color: var(--primary-color);
+        }
+
+        .user-avatar-wrap {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: pointer;
+            padding: 4px 10px 4px 4px;
+            border-radius: 20px;
+            border: 1px solid transparent;
+            transition: 0.2s;
+        }
+
+        .user-avatar-wrap:hover {
+            border-color: var(--border-color);
+            background: var(--bg-color);
+        }
+
+        .avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: var(--primary-light);
+            color: var(--primary-color);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 0.9rem;
+            border: 1px solid rgba(234, 88, 12, 0.2);
+        }
+
+        /* --- Main Layout Wrapper --- */
+        .app-body {
+            display: flex;
+            flex: 1;
+            height: calc(100vh - 64px);
+            overflow: hidden;
+        }
+
+        /* --- Sidebar --- */
+        .sidebar {
+            width: 72px;
+            height: 100%;
+            background: var(--topbar-bg);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px 0;
+            z-index: 100;
+        }
+
+        .nav-item {
+            width: 48px;
+            height: 48px;
+            border-radius: 14px; /* More modern squircle/pill shape */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 1rem;
+            color: var(--text-muted);
+            cursor: pointer;
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            font-size: 1.2rem;
+        }
+
+        .nav-item:hover {
+            color: var(--primary-color);
+            background: var(--primary-light);
+        }
+
+        .nav-item.active {
+            color: var(--primary-color);
+            background: var(--primary-light);
+            box-shadow: inset 0 0 0 1px rgba(234, 88, 12, 0.15);
+        }
+        
+        /* Removed the side vertical bar in favor of pill highlighting */
+
+        .tooltip {
+            position: absolute;
+            left: 60px;
+            background: var(--text-main);
+            color: white;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s, transform 0.2s;
+            transform: translateX(-10px);
+            white-space: nowrap;
+            box-shadow: var(--shadow-md);
+            z-index: 300;
+        }
+        .nav-item:hover .tooltip { 
+            opacity: 1; 
+            transform: translateX(0);
+        }
+
+        /* --- Main Content Area --- */
+        .main-content {
+            flex: 1;
+            position: relative;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        .view-section {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+            display: flex;
+            background: transparent;
+        }
+
+        .view-section.active {
+            opacity: 1;
+            pointer-events: all;
+        }
+
+        /* Generic Header within pages */
+        .page-header {
+            padding: 1.25rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--glass-bg);
+            backdrop-filter: blur(10px);
+            z-index: 10;
+        }
+
+        .page-title h1 {
+            font-weight: 600;
+            font-size: 1.15rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--text-main);
+        }
+
+        /* --- Chat View Layout (Left Sidebar + Main Chat) --- */
+        #view-chat {
+            flex-direction: row;
+        }
+        
+        .chat-sidebar {
+            width: 280px;
+            height: 100%;
+            background: var(--topbar-bg);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            padding: 1.5rem;
+            z-index: 10;
+        }
+
+        .btn-new-chat {
+            width: 100%;
+            padding: 12px;
+            background: var(--primary-color);
+            border: none;
+            border-radius: 10px;
+            color: white;
+            font-weight: 600;
+            font-size: 0.95rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            box-shadow: 0 4px 10px rgba(234, 88, 12, 0.25);
+            margin-bottom: 1.5rem;
+        }
+
+        .btn-new-chat:hover {
+            background: var(--primary-hover);
+            transform: translateY(-1px);
+            box-shadow: 0 6px 14px rgba(234, 88, 12, 0.3);
+        }
+
+        .history-list {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 4px; /* Tighter gap for modern look */
+        }
+
+        .history-item {
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            color: var(--text-main);
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            border: 1px solid transparent;
+        }
+        
+        .history-item i {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        .history-item:hover {
+            background: var(--bg-color);
+        }
+
+        .history-item.active {
+            background: var(--primary-light);
+            color: var(--primary-hover);
+            font-weight: 500;
+            border: 1px solid rgba(234, 88, 12, 0.1);
+        }
+        
+        .history-item.active i {
+            color: var(--primary-color);
+        }
+
+        .chat-main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: var(--bg-color); /* Light cream */
+        }
+
+        .chat-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 2rem;
+            max-width: 900px;
+            margin: 0 auto;
+            width: 100%;
+        }
+
+        .chat-history-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding-right: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        .message {
+            display: flex;
+            gap: 15px;
+            max-width: 85%;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        .msg-user { align-self: flex-end; flex-direction: row-reverse; }
+        
+        .msg-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.1rem;
+            background: white;
+            border: 1px solid var(--border-color);
+            box-shadow: var(--shadow-sm);
+            flex-shrink: 0;
+            color: var(--text-muted);
+        }
+        
+        .msg-ai .msg-avatar {
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            box-shadow: 0 2px 6px rgba(234, 88, 12, 0.2);
+        }
+
+        .msg-content {
+            background: white;
+            border: 1px solid var(--border-color);
+            padding: 16px 20px;
+            border-radius: 12px;
+            line-height: 1.6;
+            font-size: 0.95rem;
+            color: var(--text-main);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .msg-user .msg-content {
+            background: var(--primary-light); 
+            border-color: rgba(234, 88, 12, 0.15);
+            color: #7c2d12;
+        }
+
+        .chat-input-area {
+            margin-top: 2rem;
+            position: relative;
+            background: white;
+            border-radius: 16px;
+            box-shadow: var(--shadow-md);
+            border: 1px solid var(--border-color);
+        }
+
+        .chat-input {
+            width: 100%;
+            background: transparent;
+            border: none;
+            padding: 18px 60px 18px 20px;
+            border-radius: 16px;
+            color: var(--text-main);
+            font-size: 1rem;
+            outline: none;
+        }
+
+        .chat-input::placeholder {
+            color: var(--text-muted);
+        }
+
+        .btn-send {
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 38px;
+            height: 38px;
+            border-radius: 10px;
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-send:hover { 
+            background: var(--primary-hover);
+        }
+
+        /* --- Graph View specific --- */
+        #view-graph {
+            flex-direction: row; 
+            background: var(--bg-color);
+        }
+        
+        .graph-sidebar {
+            width: 280px;
+            height: 100%;
+            background: var(--topbar-bg);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            padding: 1.5rem;
+            z-index: 10;
+        }
+
+        .graph-main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            overflow: hidden;
+        }
+
+        #graph-container {
+            width: 100%;
+            flex: 1;
+            background: transparent;
+        }
+
+        .node-details-panel {
+            position: absolute;
+            right: -420px;
+            top: 65px; /* Offset for page header */
+            width: 400px;
+            height: calc(100% - 65px);
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(24px);
+            border-left: 1px solid var(--border-color);
+            padding: 2.5rem;
+            transition: right 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            z-index: 20;
+            display: flex;
+            flex-direction: column;
+            box-shadow: -10px 0 30px rgba(0, 0, 0, 0.04);
+        }
+
+        .node-details-panel.open {
+            right: 0;
+        }
+
+        .close-panel {
+            position: absolute;
+            top: 25px;
+            right: 25px;
+            cursor: pointer;
+            color: var(--text-muted);
+            font-size: 1.2rem;
+            padding: 5px;
+        }
+        .close-panel:hover { color: var(--text-main); }
+
+        .node-tag {
+            display: inline-block;
+            padding: 4px 12px;
+            background: var(--primary-light);
+            color: var(--primary-hover);
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-bottom: 1.2rem;
+            border: 1px solid rgba(234, 88, 12, 0.2);
+            align-self: flex-start;
+        }
+
+        .doc-ref {
+            background: white;
+            border: 1px solid var(--border-color);
+            padding: 14px;
+            border-radius: 12px;
+            margin-top: 15px;
+            cursor: pointer;
+            transition: 0.2s;
+            box-shadow: var(--shadow-sm);
+        }
+        .doc-ref:hover { 
+            background: var(--bg-color); 
+            border-color: var(--primary-color);
+            box-shadow: var(--shadow-md);
+        }
+        .doc-ref h4 { font-size: 0.9rem; color: var(--text-main); margin-bottom: 5px; }
+        .doc-ref p { font-size: 0.8rem; color: var(--text-muted); line-height: 1.5; }
+
+        /* --- Upload View specific --- */
+        #view-upload {
+            flex-direction: row; 
+            background: var(--bg-color);
+        }
+        
+        .upload-sidebar {
+            width: 280px;
+            height: 100%;
+            background: var(--topbar-bg);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            z-index: 10;
+        }
+
+        .upload-sidebar-header {
+            padding: 1.5rem 1.5rem 1.2rem 1.5rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .upload-sidebar-header h2 {
+            font-size: 1.15rem;
+            color: var(--text-main);
+            font-weight: 600;
+        }
+
+        .btn-upload-icon {
+            width: 34px;
+            height: 34px;
+            border-radius: 8px;
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            box-shadow: 0 2px 6px rgba(217, 119, 87, 0.2);
+        }
+
+        .btn-upload-icon:hover {
+            background: var(--primary-hover);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 10px rgba(217, 119, 87, 0.3);
+        }
+
+        .doc-search-box {
+            padding: 0 1.5rem 1.2rem 1.5rem;
+            position: relative;
+        }
+
+        .doc-search-box i {
+            position: absolute;
+            left: 2.3rem;
+            top: calc(50% - 0.6rem);
+            transform: translateY(-50%);
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        .doc-search-box input {
+            width: 100%;
+            background: var(--bg-color);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 10px 10px 10px 38px;
+            font-size: 0.9rem;
+            color: var(--text-main);
+            outline: none;
+            transition: all 0.2s;
+        }
+
+        .doc-search-box input:focus {
+            border-color: var(--primary-color);
+            background: white;
+            box-shadow: 0 0 0 2px rgba(217, 119, 87, 0.1);
+        }
+
+        .doc-list {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            padding: 0 1.2rem 1.5rem 1.2rem;
+            gap: 6px;
+        }
+
+        .doc-list-item {
+            display: flex;
+            align-items: center;
+            padding: 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+            gap: 12px;
+        }
+
+        .doc-list-item:hover {
+            background: var(--bg-color);
+        }
+
+        .doc-list-item.active {
+            background: white;
+            border-color: var(--border-color);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .doc-icon {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            background: var(--bg-color);
+            border: 1px solid var(--border-color);
+        }
+
+        .doc-list-item.active .doc-icon {
+            background: var(--primary-light);
+            border-color: transparent;
+        }
+
+        .doc-info {
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .doc-title {
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: var(--text-main);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .doc-meta {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .upload-content-wrapper {
+            flex: 1;
+            display: flex;
+            padding: 2rem;
+            height: 100%;
+        }
+
+        /* The Parsing Log Panel */
+        .upload-right {
+            flex: 1;
+            background: white;
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: var(--shadow-md);
+        }
+
+        .log-header {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--bg-color);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 600;
+            font-size: 0.95rem;
+        }
+
+        .log-content {
+            flex: 1;
+            padding: 1.5rem;
+            overflow-y: auto;
+            background: var(--bg-color); /* Light theme unified */
+            color: var(--text-main);
+            font-family: 'SF Mono', Consolas, 'Courier New', Courier, monospace;
+            font-size: 0.85rem;
+            line-height: 1.8;
+            border-top: 1px solid var(--border-color);
+        }
+
+        .log-line { margin-bottom: 8px; }
+        .log-time { color: var(--text-muted); margin-right: 15px; opacity: 0.8;}
+        .log-info { color: #0284c7; font-weight: 600; } 
+        .log-success { color: #16a34a; font-weight: bold; } 
+        .log-warn { color: #d97706; font-weight: 600; } 
+        .log-error { color: #dc2626; font-weight: bold; } 
+
+    </style>
+</head>
+<body>
+
+    <!-- Global Top Bar -->
+    <header class="top-bar">
+        <div class="logo-area">
+            <div class="logo-icon">
+                <i class="fa-solid fa-cube"></i>
+            </div>
+            GraphRAG
+        </div>
+        
+        <div class="user-profile">
+            <div class="nav-tools">
+                <i class="fa-solid fa-bell"></i>
+                <i class="fa-solid fa-gear"></i>
+            </div>
+            <div class="user-avatar-wrap">
+                <div class="avatar">L</div>
+                <div style="font-size: 0.9rem; font-weight: 500;">Lin Junhong</div>
+                <i class="fa-solid fa-chevron-down" style="font-size: 0.75rem; color: var(--text-muted)"></i>
+            </div>
+        </div>
+    </header>
+
+    <div class="app-body">
+        <!-- Sidebar -->
+        <nav class="sidebar">
+            <div class="nav-item active" onclick="switchView('chat')" id="nav-chat">
+                <i class="fa-solid fa-message"></i>
+                <span class="tooltip">AI Chat</span>
+            </div>
+            <div class="nav-item" onclick="switchView('graph')" id="nav-graph">
+                <i class="fa-solid fa-project-diagram"></i>
+                <span class="tooltip">Graph Explorer</span>
+            </div>
+            <div class="nav-item" onclick="switchView('upload')" id="nav-upload">
+                <i class="fa-solid fa-cloud-arrow-up"></i>
+                <span class="tooltip">Data Upload</span>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            
+            <!-- View: Chat (DEFAULT) -->
+            <section id="view-chat" class="view-section active">
+                
+                <!-- Chat History Sidebar -->
+                <div class="chat-sidebar">
+                    <div style="display: flex; gap: 10px; margin-bottom: 1.5rem;">
+                        <div style="position: relative; flex: 1;">
+                            <i class="fa-solid fa-magnifying-glass" style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 0.85rem;"></i>
+                            <input type="text" placeholder="Search chats..." style="width: 100%; height: 38px; background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 8px; padding: 0 10px 0 32px; font-size: 0.9rem; color: var(--text-main); outline: none; transition: all 0.2s;" onfocus="this.style.background='white'; this.style.borderColor='var(--primary-color)';" onblur="this.style.background='var(--bg-color)'; this.style.borderColor='var(--border-color)';">
+                        </div>
+                        <button class="btn-upload-icon" title="New Chat" style="width: 38px; height: 38px; flex-shrink: 0;"><i class="fa-solid fa-pen-to-square"></i></button>
+                    </div>
+                    <div style="font-size: 0.8rem; font-weight: 600; color: var(--text-muted); margin-bottom: 12px; padding-left: 4px; text-transform: uppercase;">Recent Conversations</div>
+                    <div class="history-list">
+                        <div class="history-item active">
+                            <i class="fa-regular fa-message"></i> 核心架构设计分析
+                        </div>
+                        <div class="history-item">
+                            <i class="fa-regular fa-message"></i> 知识图谱原理解析
+                        </div>
+                        <div class="history-item">
+                            <i class="fa-regular fa-message"></i> Neo4j vs PGQ 性能对比
+                        </div>
+                        <div class="history-item" style="opacity: 0.8">
+                            <i class="fa-regular fa-message"></i> 关于大模型微调的基...
+                        </div>
+                    </div>
+                </div>
+
+                <div class="chat-main">
+                    <div class="page-header" style="border-bottom: none; background: transparent;">
+                        <div class="page-title">
+                            <h1 style="font-size: 1.3rem;">GraphRAG 智能对话</h1>
+                        </div>
+                        <span style="font-size: 0.85rem; color: var(--text-muted); background: white; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border-color); box-shadow: var(--shadow-sm);">
+                            模型: qwen-max <i class="fa-solid fa-chevron-down" style="margin-left:5px; font-size: 0.7rem;"></i>
+                        </span>
+                    </div>
+                    <div class="chat-container">
+                        <div class="chat-history-messages">
+                            <div class="message msg-ai">
+                                <div class="msg-avatar"><i class="fa-solid fa-bolt"></i></div>
+                                <div class="msg-content">
+                                    你好！我是基于 <strong>GraphRAG</strong> 的智能助手。我已经学习了您上传的所有文档并构建了知识图谱。您可以向我提问关于资料的任何问题，我会结合底层的 Neo4j/PGQ 为您解答。
+                                </div>
+                            </div>
+                            <!-- Sample Chat -->
+                            <div class="message msg-user">
+                                <div class="msg-avatar"><i class="fa-solid fa-user"></i></div>
+                                <div class="msg-content">结合知识图谱，总结一下文档中提到的核心架构设计。</div>
+                            </div>
+                            <div class="message msg-ai">
+                                <div class="msg-avatar"><i class="fa-solid fa-bolt"></i></div>
+                                <div class="msg-content">
+                                    根据图谱分析，核心架构分为以下几个模块：<br><br>
+                                    1. <strong>数据解析层</strong>：支持 PDF, TXT, MD 等。<br>
+                                    2. <strong>存储抽象层</strong>：利用抽象接口实现图谱数据持久化，目前兼容 Neo4j，也预留了 SQL Vector 和 PGQ (Property Graph Queries) 的接口。<br>
+                                    3. <strong>理解生成层</strong>：调用的 Qwen API 对内容进行推理。<br><br>
+                                    <span style="font-size: 0.8rem; color: var(--primary-hover); display:flex; align-items:center; gap: 5px; margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(234, 88, 12, 0.1);">
+                                        <i class="fa-solid fa-arrow-up-right-from-square"></i> 来源：architecture_design.md
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="chat-input-area">
+                            <input type="text" class="chat-input" placeholder="输入您的方法，按回车发送...">
+                            <button class="btn-send"><i class="fa-solid fa-arrow-up"></i></button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- View: Graph -->
+            <section id="view-graph" class="view-section">
+                <!-- Graph Sidebar -->
+                <div class="graph-sidebar">
+                    <div style="font-size: 0.8rem; font-weight: 600; color: var(--text-muted); margin-bottom: 12px; padding-left: 4px; text-transform: uppercase;">Graph Navigation</div>
+                    <div class="history-list">
+                        <div class="history-item active">
+                            <i class="fa-solid fa-circle-nodes"></i> Global Ontology
+                        </div>
+                        <div class="history-item">
+                            <i class="fa-solid fa-file-pdf"></i> Documents Only
+                        </div>
+                        <div class="history-item">
+                            <i class="fa-solid fa-shapes"></i> Entities Only
+                        </div>
+                    </div>
+                </div>
+
+                <div class="graph-main">
+                    <div class="page-header">
+                        <div class="page-title">
+                            <h1>全局知识图谱网络</h1>
+                        </div>
+                        <div>
+                            <span style="font-size: 0.85rem; color: var(--text-main); background: white; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border-color); font-weight: 500;">
+                                <i class="fa-solid fa-database" style="color: var(--primary-color); margin-right: 5px;"></i> Abstract Store Connected
+                            </span>
+                        </div>
+                    </div>
+                    
+                    <div id="graph-container"></div>
+                
+                <!-- Floating Detail Panel -->
+                <div class="node-details-panel" id="node-panel">
+                    <i class="fa-solid fa-xmark close-panel" onclick="closePanel()"></i>
+                    <span class="node-tag" id="node-type">Concept</span>
+                    <h2 id="node-title" style="margin-bottom: 1rem; font-size: 1.5rem; color: var(--text-main)">Large Language Models</h2>
+                    <p id="node-desc" style="color: var(--text-muted); font-size: 0.95rem; line-height: 1.6; margin-bottom: 1.5rem;">
+                        A large language model is a computational model capable of general-purpose language generation and other natural language processing tasks.
+                    </p>
+                    
+                    <h3 style="font-size: 0.95rem; margin-bottom: 10px; border-bottom: 1px solid var(--border-color); padding-bottom: 10px; color: var(--text-main); font-weight: 600;">关联资料 (Sources)</h3>
+                    <div id="node-sources">
+                        <div class="doc-ref">
+                            <h4><i class="fa-regular fa-file-pdf" style="color: #ef4444;"></i> deep_learning_architecture.pdf</h4>
+                            <p style="margin-top: 4px;">Page 45 - Discussion on Transformer architectures and attention mechanisms.</p>
+                        </div>
+                        <div class="doc-ref">
+                            <h4><i class="fa-brands fa-markdown" style="color: #0ea5e9;"></i> backend_graph.md</h4>
+                            <p style="margin-top: 4px;">Line 112 - Defines the AbstractGraphStore interface implementations.</p>
+                        </div>
+                    </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- View: Upload -->
+            <section id="view-upload" class="view-section">
+                <!-- Changed to Sidebar layout -->
+                <div class="upload-sidebar">
+                    <div class="upload-sidebar-header">
+                        <h2>Parsed Documents</h2>
+                        <button class="btn-upload-icon" title="Upload Local File"><i class="fa-solid fa-plus"></i></button>
+                    </div>
+                    <div class="doc-search-box">
+                        <i class="fa-solid fa-magnifying-glass"></i>
+                        <input type="text" placeholder="Search files...">
+                    </div>
+                    <div class="doc-list">
+                        <!-- Items -->
+                        <div class="doc-list-item active">
+                            <div class="doc-icon"><i class="fa-regular fa-file-pdf" style="color: #df6666;"></i></div>
+                            <div class="doc-info">
+                                <div class="doc-title">architecture_design.pdf</div>
+                                <div class="doc-meta">
+                                    <span>2.4 MB</span>
+                                    <span style="color: #6a9563;">Parsed</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="doc-list-item">
+                            <div class="doc-icon"><i class="fa-brands fa-markdown" style="color: #5587a8;"></i></div>
+                            <div class="doc-info">
+                                <div class="doc-title">backend_graph.md</div>
+                                <div class="doc-meta">
+                                    <span>12 KB</span>
+                                    <span style="color: #6a9563;">Parsed</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="doc-list-item">
+                            <div class="doc-icon"><i class="fa-regular fa-file-lines" style="color: var(--text-muted);"></i></div>
+                            <div class="doc-info">
+                                <div class="doc-title">meeting_notes.txt</div>
+                                <div class="doc-meta">
+                                    <span>4 KB</span>
+                                    <span style="color: var(--primary-hover);">Parsing...</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="doc-list-item">
+                            <div class="doc-icon"><i class="fa-regular fa-file-pdf" style="color: #df6666;"></i></div>
+                            <div class="doc-info">
+                                <div class="doc-title">ai_agents_paper.pdf</div>
+                                <div class="doc-meta">
+                                    <span>1.2 MB</span>
+                                    <span style="color: #6a9563;">Parsed</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="upload-content-wrapper">
+
+                    <!-- Parsing Log Right -->
+                    <div class="upload-right">
+                        <div class="log-header">
+                            <i class="fa-solid fa-terminal" style="color: var(--primary-color)"></i> Runtime Parse Console
+                        </div>
+                        <div class="log-content">
+                            <!-- Mock Terminal Logs -->
+                            <div class="log-line"><span class="log-time">14:55:01</span> [<span class="log-info">INFO</span>] 系统启动，连接图数据库抽象层...</div>
+                            <div class="log-line"><span class="log-time">14:55:02</span> [<span class="log-info">INFO</span>] PGQ Backend 准备就绪.</div>
+                            <div class="log-line"><span class="log-time">14:55:05</span> [<span class="log-info">INFO</span>] 接收到文件: <code>architecture_design.pdf</code> (2.4 MB)</div>
+                            <div class="log-line"><span class="log-time">14:55:06</span> [<span class="log-info">INFO</span>] 开始 PDF 文字与排版解析 (Chunking)...</div>
+                            <div class="log-line"><span class="log-time">14:55:09</span> [<span class="log-info">INFO</span>] 文档切片完成：共生成 45 个 Chunk.</div>
+                            <div class="log-line"><span class="log-time">14:55:10</span> [<span class="log-info">INFO</span>] 调用 LLM (Qwen-Max) 并发抽取核心实体 (Entities) 和关系...</div>
+                            <div class="log-line"><span class="log-time">14:55:22</span> [<span class="log-warn">WARN</span>] Chunk #12 实体关系置信度较低，已标记需二次核对。</div>
+                            <div class="log-line"><span class="log-time">14:55:28</span> [<span class="log-success">SUCCESS</span>] LLM 抽取完成。提取出: 124 个 Node, 203 条 Edge.</div>
+                            <div class="log-line"><span class="log-time">14:55:29</span> [<span class="log-info">INFO</span>] 正在写入图数据库 (AbstractGraphStore.save)...</div>
+                            <div class="log-line"><span class="log-time">14:55:31</span> [<span class="log-success">SUCCESS</span>] 文件 <code>architecture_design.pdf</code> 解析落库完成！</div>
+                            <div class="log-line"><br></div>
+                            <div class="log-line">[ 等待新任务... ] <span style="animation: blink 1s step-end infinite;">_</span></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <style>
+        @keyframes blink { 50% { opacity: 0; } }
+    </style>
+
+    <script>
+        // --- Navigation Logic ---
+        function switchView(viewName) {
+            document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+            
+            document.getElementById(`view-${viewName}`).classList.add('active');
+            document.getElementById(`nav-${viewName}`).classList.add('active');
+            
+            if (viewName === 'graph' && window.GraphRef) {
+                // Resume simulation
+                GraphRef.d3Force('charge').strength(-120);
+                setTimeout(() => { GraphRef.zoomToFit(400); }, 100);
+            }
+        }
+
+        // --- 3D Force Graph Initialization ---
+        const numNodes = 70;
+        const gData = {
+            nodes: [...Array(numNodes).keys()].map(i => ({ 
+                id: i, 
+                name: `Concept Node ${i}`,
+                val: Math.random() * 5 + 1,
+                group: Math.floor(Math.random() * 4)
+            })),
+            links: [...Array(numNodes * 1.5).keys()].map(() => ({
+                source: Math.floor(Math.random() * numNodes),
+                target: Math.floor(Math.random() * numNodes)
+            }))
+        };
+
+        // Authentic Claude Theme Colors
+        const colors = ['#D97757', '#C36141', '#B0AEA5', '#87867F'];
+
+        const Graph = ForceGraph3D()
+        (document.getElementById('graph-container'))
+            .graphData(gData)
+            .nodeColor(node => colors[node.group])
+            .nodeRelSize(6)
+            .linkColor(() => '#E8E6DD') // light warm gray border color
+            .linkWidth(1)
+            .backgroundColor('#FAF9F500') // transparent to see CSS background
+            .cooldownTicks(150) // Accelerate layout computation (makes it render fast)
+            .onNodeClick(node => {
+                // Open panel
+                document.getElementById('node-title').innerText = node.name;
+                document.getElementById('node-type').innerText = `Entity Group ${node.group}`;
+                document.getElementById('node-panel').classList.add('open');
+                
+                // Focus camera smoothly
+                const distance = 60;
+                const distRatio = 1 + distance/Math.hypot(node.x, node.y, node.z);
+                Graph.cameraPosition(
+                    { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio }, 
+                    node, 
+                    1500  
+                );
+            });
+
+        // Set Camera Constraints to prevent drifting & zooming out too far
+        Graph.controls().maxDistance = 600;
+        Graph.controls().minDistance = 20;
+        Graph.controls().enablePan = false; // Disable panning to prevent dragging the canvas away
+
+        window.GraphRef = Graph;
+
+        function closePanel() {
+            document.getElementById('node-panel').classList.remove('open');
+        }
+
+        // Resize handler
+        window.addEventListener('resize', () => {
+            if(document.getElementById('view-graph').classList.contains('active')) {
+                const container = document.getElementById('graph-container');
+                Graph.width(container.clientWidth).height(container.clientHeight);
+            }
+        });
+
+    </script>
+</body>
+</html>

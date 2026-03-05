@@ -1,0 +1,69 @@
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router-dom";
+import type { MemoryEntry, MemoryEntryFact } from "@graphen/shared";
+import { MemoryDetailPanel } from "../../src/memory/MemoryDetailPanel";
+
+function makeEntry(id: string): MemoryEntry {
+  return {
+    id,
+    content: "测试记忆内容",
+    normalizedContentKey: `key-${id}`,
+    state: "active",
+    reviewStatus: "auto",
+    categories: ["工作"],
+    sourceType: "manual",
+    firstSeenAt: "2026-01-01T00:00:00.000Z",
+    lastSeenAt: "2026-01-01T00:00:00.000Z",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+}
+
+function makeFact(id: string, entryId: string): MemoryEntryFact {
+  return {
+    id,
+    entryId,
+    subjectNodeId: "node-graph-1",
+    subjectText: "张三",
+    predicate: "任职",
+    objectText: "CTO",
+    valueType: "text",
+    normalizedFactKey: `fact|${id}`,
+    confidence: 0.95,
+    factState: "active",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    neo4jSynced: false,
+    neo4jRetryCount: 0,
+  };
+}
+
+afterEach(cleanup);
+
+describe("MemoryDetailPanel graph linkage", () => {
+  it("builds graph link with focusNode from fact subjectNodeId", () => {
+    render(
+      <MemoryRouter>
+        <MemoryDetailPanel
+          entry={makeEntry("entry-1")}
+          facts={[makeFact("fact-1", "entry-1")]}
+          factsLoadingStatus="loaded"
+          factsError={null}
+          evidenceByFactId={{}}
+          accessLogs={[]}
+          accessLogsLoadingStatus="loaded"
+          accessLogsError={null}
+          relatedEntries={[]}
+          relatedEntriesLoadingStatus="loaded"
+          relatedEntriesError={null}
+          onNavigateToEntry={vi.fn()}
+          onAction={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    const link = screen.getByRole("link", { name: "在图谱中查看" });
+    expect(link).toHaveAttribute("href", "/graph?focusNode=node-graph-1");
+  });
+});

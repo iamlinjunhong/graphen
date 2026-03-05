@@ -97,6 +97,20 @@ export function GraphView() {
       return allOptions;
     };
 
+    const mergeDocumentNames = (names?: Record<string, string>) => {
+      if (!names) return;
+      setDocumentOptions((prev) => {
+        const existing = new Set(prev.map((o) => o.id));
+        const additions: DocumentOption[] = [];
+        for (const [id, label] of Object.entries(names)) {
+          if (!existing.has(id)) {
+            additions.push({ id, label });
+          }
+        }
+        return additions.length > 0 ? [...prev, ...additions] : prev;
+      });
+    };
+
     const init = async () => {
       try {
         // Load documents first to avoid race condition (T4)
@@ -104,10 +118,13 @@ export function GraphView() {
         setDocumentOptions(options);
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") return;
+        console.warn("[GraphView] Failed to load document list, source document names will show as IDs:", error);
       }
 
       try {
-        await loadInitialGraphData();
+        const docNames = await loadInitialGraphData();
+        // Merge document names from graph API as fallback
+        mergeDocumentNames(docNames);
       } catch {
         // error is already handled inside loadInitialGraphData
       }
@@ -136,7 +153,7 @@ export function GraphView() {
       .sort((a, b) => a.localeCompare(b))
       .map((id) => ({
         id,
-        label: knownLabels.get(id) ?? id
+        label: knownLabels.get(id) ?? `${id.slice(0, 8)}…`
       }));
   }, [documentOptions, nodes]);
 
@@ -258,11 +275,24 @@ export function GraphView() {
       setViewError(null);
 
       try {
-        await expandNode({
+        const docNames = await expandNode({
           nodeId,
           depth: 1,
           maxNodes: 120
         });
+        // Merge any new document names from the expand response
+        if (docNames) {
+          setDocumentOptions((prev) => {
+            const existing = new Set(prev.map((o) => o.id));
+            const additions: DocumentOption[] = [];
+            for (const [id, label] of Object.entries(docNames)) {
+              if (!existing.has(id)) {
+                additions.push({ id, label });
+              }
+            }
+            return additions.length > 0 ? [...prev, ...additions] : prev;
+          });
+        }
         setExpandedNodeIds((current) => {
           const next = new Set(current);
           next.add(nodeId);

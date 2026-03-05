@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export type ThemeMode = "light" | "dark" | "system";
-export type AppView = "chat" | "graph" | "documents";
+export type AppView = "chat" | "graph" | "documents" | "memory";
 
 interface AppState {
   themeMode: ThemeMode;

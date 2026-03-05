@@ -44,15 +44,23 @@ function buildDocument(overrides?: Partial<Document>): Document {
 }
 
 function makePipeline(store: FakeGraphStore, llm: SpyLLMService, cacheDir: string) {
-  return new DocumentPipeline(store, llm, undefined, {
-    cacheDir,
-    chunkSize: 80,
-    chunkOverlap: 0,
-    maxChunksPerDocument: 50,
-    maxEstimatedTokens: 50_000,
-    extractionConcurrency: 2,
-    embeddingConcurrency: 2,
-  });
+  return new DocumentPipeline(
+    store,
+    llm,
+    undefined,
+    {
+      cacheDir,
+      chunkSize: 80,
+      chunkOverlap: 0,
+      maxChunksPerDocument: 50,
+      maxEstimatedTokens: 50_000,
+      extractionConcurrency: 2,
+      embeddingConcurrency: 2,
+    },
+    {
+      documentStore: store,
+    }
+  );
 }
 
 describe("DocumentPipeline rawText + forceRebuild", () => {
@@ -202,6 +210,17 @@ class SpyLLMService implements LLMServiceLike {
         need_aggregation: false,
       },
       rewritten_query: "unused",
+      memory_intent: "none",
+      target_subject: "unknown",
+      must_use_memory: false,
+      retrieval_weights: {
+        entry_manual: 0.2,
+        entry_chat: 0.2,
+        entry_document: 0.4,
+        graph_facts: 0.8,
+        doc_chunks: 0.8
+      },
+      conflict_policy: "latest_manual_wins",
     };
   }
 

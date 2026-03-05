@@ -255,6 +255,26 @@ export class FakeGraphStore implements AbstractGraphStore {
     }
   }
 
+  async removeDocumentData(docId: string): Promise<void> {
+    for (const node of [...this.nodes.values()]) {
+      const sourceDocumentIds = node.sourceDocumentIds.filter((id) => id !== docId);
+      if (sourceDocumentIds.length === 0) {
+        this.nodes.delete(node.id);
+      } else {
+        this.nodes.set(node.id, { ...node, sourceDocumentIds });
+      }
+    }
+    for (const edge of [...this.edges.values()]) {
+      const sourceDocumentIds = edge.sourceDocumentIds.filter((id) => id !== docId);
+      if (sourceDocumentIds.length === 0) {
+        this.edges.delete(edge.id);
+      } else {
+        this.edges.set(edge.id, { ...edge, sourceDocumentIds });
+      }
+    }
+  }
+
+
   async saveChunks(chunks: DocumentChunk[]): Promise<void> {
     for (const chunk of chunks) {
       this.chunks.set(chunk.id, { ...chunk });

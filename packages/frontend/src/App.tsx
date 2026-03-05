@@ -8,6 +8,11 @@ import { DocumentView } from "./pages/DocumentView";
 import type { AppView } from "./stores/useAppStore";
 import { useAppStore } from "./stores/useAppStore";
 
+const LazyMemoryWeavingPage = lazy(async () => {
+  const module = await import("./pages/MemoryWeavingPage");
+  return { default: module.MemoryWeavingPage };
+});
+
 const LazyGraphView = lazy(async () => {
   const module = await import("./pages/GraphView");
   return { default: module.GraphView };
@@ -22,6 +27,20 @@ function GraphRouteFallback() {
       </header>
       <div className="panel content-panel">
         <p className="muted">Loading Reagraph modules and graph UI chunks.</p>
+      </div>
+    </section>
+  );
+}
+
+function MemoryRouteFallback() {
+  return (
+    <section className="page-shell">
+      <header className="page-header">
+        <p className="page-kicker">记忆编织</p>
+        <h2 className="page-title">Loading Memory Weaving...</h2>
+      </header>
+      <div className="panel content-panel">
+        <p className="muted">Loading memory page components.</p>
       </div>
     </section>
   );
@@ -53,6 +72,8 @@ export function App() {
       nextView = "graph";
     } else if (path.startsWith("/documents")) {
       nextView = "documents";
+    } else if (path.startsWith("/memory")) {
+      nextView = "memory";
     }
     setCurrentView(nextView);
   }, [location.pathname, setCurrentView]);
@@ -89,6 +110,14 @@ export function App() {
               }
             />
             <Route path="/documents" element={<DocumentView />} />
+            <Route
+              path="/memory"
+              element={
+                <Suspense fallback={<MemoryRouteFallback />}>
+                  <LazyMemoryWeavingPage />
+                </Suspense>
+              }
+            />
           </Routes>
         </MainContent>
       </div>

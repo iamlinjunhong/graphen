@@ -10,6 +10,7 @@ import { DocumentEditor } from "./DocumentEditor";
 import { DocumentSidebar } from "./DocumentSidebar";
 import { UploadArea } from "./UploadArea";
 
+
 interface StatusStreamPayload {
   id: string;
   status: DocumentStatus | "pending";
@@ -630,6 +631,7 @@ export function DocumentView() {
             isDeleting={isDeleting}
             isReparsing={isReparsing}
           />
+
         </div>
       </div>
 

@@ -14,7 +14,7 @@
 - 🧠 **Knowledge Graph Construction** — Extract entities and relationships from documents using LLM, automatically building a structured knowledge graph
 - 🌐 **Interactive Visualization** — 2D force-directed graph powered by Reagraph with click, search, filter, and expand interactions
 - 💬 **GraphRAG Chat** — Enhanced conversational AI using knowledge graph + vector retrieval, with accurate answers and source citations
-- 🔌 **Database Abstraction** — Currently uses Neo4j, with a reserved ability to switch to SQL/PGQ
+- 🔌 **Split Storage Architecture** — PostgreSQL + pgvector as source of truth, Neo4j as graph projection
 
 ## 🏗️ Tech Stack
 
@@ -26,8 +26,8 @@
 | **State Management** | Zustand |
 | **Backend** | Node.js + Express + TypeScript |
 | **LLM** | Gemini / Qwen / OpenAI (OpenAI-compatible) |
-| **Graph Database** | Neo4j 5.x (Graph + Vector Index) |
-| **Chat Storage** | SQLite (better-sqlite3) |
+| **Primary Storage** | PostgreSQL 15+ + pgvector |
+| **Graph Database** | Neo4j 5.x (graph traversal and subgraph query) |
 | **Monorepo** | pnpm workspace |
 
 ## 📁 Project Structure
@@ -55,6 +55,7 @@ graphen/
 |------|---------|-------|
 | **Node.js** | ≥ 18.x | LTS version recommended (20.x / 22.x) |
 | **pnpm** | ≥ 10.0 | Package manager (`npm install -g pnpm`) |
+| **PostgreSQL** | ≥ 15.x | Primary database (requires `pgvector` extension) |
 | **Neo4j** | ≥ 5.x | Graph database (local install or Neo4j Aura Free Tier) |
 | **LLM API Key** | — | API key for Gemini, Qwen, or OpenAI |
 
@@ -101,9 +102,16 @@ Edit the `.env` file with the required settings (see [Configuration](#%EF%B8%8F-
 LLM_PROVIDER=gemini # or qwen, openai
 GEMINI_API_KEY=sk-xxxxxxxxxxxxxxxx
 NEO4J_PASSWORD=your-neo4j-password
+PG_HOST=localhost
+PG_DATABASE=graphen
+PG_USER=graphen
 
 # Other settings have default values, adjust as needed
 ```
+
+If `PG_AUTO_BOOTSTRAP=true` (default), backend startup will automatically ensure the configured
+`PG_USER` and `PG_DATABASE` exist, then initialize the memory schema. It uses
+`PG_BOOTSTRAP_DATABASE` + `PG_BOOTSTRAP_USER` (or `PGUSER/USER` fallback) for admin connection.
 
 ### 5. Start the Development Server
 
@@ -136,6 +144,8 @@ All configuration is managed via the `.env` file in the project root (based on t
 | `PORT` | `3001` | Backend server port |
 | `CORS_ORIGIN` | `http://localhost:5173` | Allowed frontend CORS origin |
 | `LOG_LEVEL` | `info` | Log level (`debug` / `info` / `warn` / `error`) |
+| `GRAPH_SYNC_ENABLED` | `true` | Enable/disable GraphSyncWorker |
+| `RUNTIME_PG_REQUIRED` | `true` | When `NODE_ENV=test`, allow non-PG runtime mode if set to `false` |
 
 ### LLM
 
@@ -168,6 +178,24 @@ All configuration is managed via the `.env` file in the project root (based on t
 | `NEO4J_PASSWORD` | *(required)* | Database password |
 | `NEO4J_DATABASE` | `neo4j` | Database name |
 
+### PostgreSQL
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PG_HOST` | `localhost` | PostgreSQL host |
+| `PG_PORT` | `5432` | PostgreSQL port |
+| `PG_DATABASE` | `graphen` | PostgreSQL database name |
+| `PG_USER` | `graphen` | PostgreSQL user |
+| `PG_PASSWORD` | `""` | PostgreSQL password |
+| `PG_MAX_CONNECTIONS` | `20` | Connection pool max size |
+| `PG_AUTO_BOOTSTRAP` | `true` | Auto-create runtime role/database and initialize memory schema at startup |
+| `PG_BOOTSTRAP_DATABASE` | `postgres` | Admin connection database used for bootstrap |
+| `PG_BOOTSTRAP_USER` | `""` | Admin user for bootstrap (`PGUSER/USER` fallback when empty) |
+| `PG_BOOTSTRAP_PASSWORD` | `""` | Admin password for bootstrap |
+| `PG_VECTOR_HNSW_M` | `16` | pgvector HNSW `m` parameter |
+| `PG_VECTOR_HNSW_EF_CONSTRUCTION` | `200` | pgvector HNSW build parameter |
+| `PG_VECTOR_EF_SEARCH` | `64` | pgvector query-time `ef_search` |
+
 ### Document Processing
 
 | Variable | Default | Description |
@@ -189,7 +217,6 @@ All configuration is managed via the `.env` file in the project root (based on t
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CHAT_DB_PATH` | `data/chat.db` | SQLite chat database path |
 | `CACHE_DIR` | `data/cache` | Parsing intermediate result cache directory |
 
 ---

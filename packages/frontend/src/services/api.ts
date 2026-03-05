@@ -8,6 +8,8 @@ import type {
   CreateChatSessionResponse,
   Document,
   DocumentStatus,
+  FactReviewStatus,
+  FactValueType,
   GetConfigResponse,
   GetDocumentContentResponse,
   GraphEdge,
@@ -18,6 +20,17 @@ import type {
   GraphVectorSearchResponse,
   HealthResponse,
   ListChatSessionsResponse,
+  MemoryEvidence,
+  MemoryEntry,
+  MemoryEntryCreateMetadata,
+  MemoryEntryFact,
+  MemoryEntrySearchFilters,
+  MemoryEntryUpdateMetadata,
+  MemoryEntryUpsertFactInput,
+  MemoryFact,
+  MemorySourceType,
+  ReviewAction,
+  TriggerChatMemoryExtractionResponse,
   UpdateConfigRequest,
   UpdateConfigResponse
 } from "@graphen/shared";
@@ -47,7 +60,7 @@ export class ApiClientError extends Error {
   }
 }
 
-type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
+type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 type QueryPrimitive = string | number | boolean | null | undefined;
 type QueryValue = QueryPrimitive | QueryPrimitive[];
 type QueryParams = Record<string, QueryValue>;
@@ -75,6 +88,78 @@ interface PaginationMeta {
 
 export interface PaginatedResult<T> extends PaginationMeta {
   items: T[];
+}
+
+interface MemoryEntriesFilterResponse {
+  entries: MemoryEntry[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+interface MemoryStatsResponse {
+  total: number;
+  byReviewStatus: Partial<Record<FactReviewStatus, number>>;
+  bySourceType: Partial<Record<MemorySourceType, number>>;
+  byState: Record<string, number>;
+}
+
+export interface MemoryCategory {
+  name: string;
+  description: string | null;
+  count: number;
+}
+
+export interface MemoryAccessLog {
+  id: string;
+  entryId: string;
+  factId: string | null;
+  chatSessionId: string;
+  accessedAt: string;
+  accessType: string;
+}
+
+interface RawMemoryAccessLog {
+  id: string;
+  entry_id: string;
+  fact_id: string | null;
+  chat_session_id: string;
+  accessed_at: string;
+  access_type: string;
+}
+
+interface MemoryAccessLogsResponse {
+  logs: RawMemoryAccessLog[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+interface MemoryCategoriesResponse {
+  categories: MemoryCategory[];
+}
+
+interface MemoryEntryMutationResponse {
+  entry: MemoryEntry;
+  facts: MemoryEntryFact[];
+  extraction: {
+    requested: boolean;
+    generated: number;
+    replacedFacts?: boolean;
+    upsert?: {
+      created: number;
+      updated: number;
+    };
+    error?: string;
+  };
+}
+
+export type MemoryBatchAction = "pause" | "archive" | "resume" | "delete" | "confirm" | "reject";
+
+interface MemoryBatchResult {
+  action: MemoryBatchAction;
+  affected: number;
+  sync_facts: boolean;
 }
 
 export interface UploadDocumentAccepted extends UploadDocumentResponse {
@@ -207,6 +292,17 @@ function parseChatMessage(raw: RawChatMessage): ChatMessage {
   return {
     ...raw,
     createdAt: toDate(raw.createdAt)
+  };
+}
+
+function parseMemoryAccessLog(raw: RawMemoryAccessLog): MemoryAccessLog {
+  return {
+    id: raw.id,
+    entryId: raw.entry_id,
+    factId: raw.fact_id,
+    chatSessionId: raw.chat_session_id,
+    accessedAt: raw.accessed_at,
+    accessType: raw.access_type
   };
 }
 
@@ -449,7 +545,7 @@ export const apiClient = {
     async getNeighbors(
       id: string,
       params?: { depth?: number; maxNodes?: number; signal?: AbortSignal }
-    ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
+    ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; documentNames?: Record<string, string> }> {
       const result = await request<GraphSubgraphResponse>(`/graph/nodes/${id}/neighbors`, {
         query: {
           depth: params?.depth,
@@ -459,7 +555,8 @@ export const apiClient = {
       });
       return {
         nodes: result.data.nodes.map((node) => parseGraphNode(node as RawGraphNode)),
-        edges: result.data.edges.map((edge) => parseGraphEdge(edge as RawGraphEdge))
+        edges: result.data.edges.map((edge) => parseGraphEdge(edge as RawGraphEdge)),
+        documentNames: result.data.documentNames
       };
     },
 
@@ -472,7 +569,7 @@ export const apiClient = {
       maxDepth?: number;
       maxNodes?: number;
       signal?: AbortSignal;
-    }): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
+    }): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; documentNames?: Record<string, string> }> {
       const result = await request<GraphSubgraphResponse>("/graph/subgraph", {
         query: {
           centerNodeIds: params?.centerNodeIds,
@@ -487,7 +584,8 @@ export const apiClient = {
       });
       return {
         nodes: result.data.nodes.map((node) => parseGraphNode(node as RawGraphNode)),
-        edges: result.data.edges.map((edge) => parseGraphEdge(edge as RawGraphEdge))
+        edges: result.data.edges.map((edge) => parseGraphEdge(edge as RawGraphEdge)),
+        documentNames: result.data.documentNames
       };
     },
 
@@ -605,6 +703,20 @@ export const apiClient = {
       return result.data;
     },
 
+    async triggerMemoryExtraction(
+      id: string,
+      signal?: AbortSignal
+    ): Promise<TriggerChatMemoryExtractionResponse> {
+      const result = await request<TriggerChatMemoryExtractionResponse>(
+        `/chat/sessions/${id}/memory-extraction`,
+        {
+          method: "POST",
+          signal
+        }
+      );
+      return result.data;
+    },
+
     streamUrl(id: string): string {
       return `${API_BASE_URL}/chat/sessions/${id}/messages?stream=true`;
     },
@@ -682,7 +794,255 @@ export const apiClient = {
       });
       return result.data;
     }
-  }
+  },
+
+  memory: {
+    async filterEntries(
+      payload: {
+        query?: string;
+        filters?: MemoryEntrySearchFilters;
+        page?: number;
+        pageSize?: number;
+        sortBy?: "content" | "sourceType" | "createdAt" | "updatedAt" | "lastSeenAt";
+        sortOrder?: "asc" | "desc";
+      },
+      signal?: AbortSignal
+    ): Promise<PaginatedResult<MemoryEntry>> {
+      const result = await request<MemoryEntriesFilterResponse>("/memory/entries/filter", {
+        method: "POST",
+        json: payload,
+        signal
+      });
+      return {
+        items: result.data.entries,
+        totalCount: result.data.total,
+        page: result.data.page,
+        pageSize: result.data.pageSize
+      };
+    },
+
+    async getStats(signal?: AbortSignal): Promise<MemoryStatsResponse> {
+      const result = await request<MemoryStatsResponse>("/memory/stats", { signal });
+      return result.data;
+    },
+
+    async getEntry(id: string, signal?: AbortSignal): Promise<MemoryEntry> {
+      const result = await request<MemoryEntry>(`/memory/entries/${id}`, { signal });
+      return result.data;
+    },
+
+    async getEntryFacts(id: string, signal?: AbortSignal): Promise<MemoryEntryFact[]> {
+      const result = await request<MemoryEntryFact[]>(`/memory/entries/${id}/facts`, { signal });
+      return result.data;
+    },
+
+    async getCategories(signal?: AbortSignal): Promise<MemoryCategory[]> {
+      const result = await request<MemoryCategoriesResponse>("/memory/categories", { signal });
+      return result.data.categories;
+    },
+
+    async getAccessLogs(
+      id: string,
+      params?: {
+        page?: number;
+        pageSize?: number;
+        signal?: AbortSignal;
+      }
+    ): Promise<PaginatedResult<MemoryAccessLog>> {
+      const result = await request<MemoryAccessLogsResponse>(`/memory/entries/${id}/access-log`, {
+        query: {
+          page: params?.page,
+          pageSize: params?.pageSize
+        },
+        signal: params?.signal
+      });
+
+      return {
+        items: result.data.logs.map(parseMemoryAccessLog),
+        totalCount: result.data.total,
+        page: result.data.page,
+        pageSize: result.data.pageSize
+      };
+    },
+
+    async getRelatedEntries(
+      id: string,
+      params?: {
+        limit?: number;
+        chatSessionId?: string;
+        signal?: AbortSignal;
+      }
+    ): Promise<MemoryEntry[]> {
+      const result = await request<MemoryEntry[]>(`/memory/entries/${id}/related`, {
+        query: {
+          limit: params?.limit,
+          chatSessionId: params?.chatSessionId
+        },
+        signal: params?.signal
+      });
+      return result.data;
+    },
+
+    async createEntry(
+      payload: {
+        content: string;
+        metadata?: MemoryEntryCreateMetadata;
+        facts?: MemoryEntryUpsertFactInput[];
+        reextract?: boolean;
+      },
+      signal?: AbortSignal
+    ): Promise<MemoryEntryMutationResponse> {
+      const result = await request<MemoryEntryMutationResponse>("/memory/entries", {
+        method: "POST",
+        json: payload,
+        signal
+      });
+      return result.data;
+    },
+
+    async updateEntry(
+      id: string,
+      payload: {
+        content: string;
+        metadata?: MemoryEntryUpdateMetadata;
+        facts?: MemoryEntryUpsertFactInput[];
+        reextract?: boolean;
+        replaceFacts?: boolean;
+      },
+      signal?: AbortSignal
+    ): Promise<MemoryEntryMutationResponse> {
+      const result = await request<MemoryEntryMutationResponse>(`/memory/entries/${id}`, {
+        method: "PUT",
+        json: payload,
+        signal
+      });
+      return result.data;
+    },
+
+    async batchUpdateEntries(
+      payload: {
+        ids: string[];
+        action: MemoryBatchAction;
+        note?: string;
+        sync_facts?: boolean;
+      },
+      signal?: AbortSignal
+    ): Promise<MemoryBatchResult> {
+      const result = await request<MemoryBatchResult>("/memory/entries/batch", {
+        method: "POST",
+        json: payload,
+        signal
+      });
+      return result.data;
+    },
+
+    async deleteEntries(ids: string[], signal?: AbortSignal): Promise<{ affected: number }> {
+      const result = await request<{ affected: number }>("/memory/entries", {
+        method: "DELETE",
+        json: { ids },
+        signal
+      });
+      return result.data;
+    },
+
+    async getFacts(params?: {
+      status?: FactReviewStatus[];
+      subjectNodeId?: string;
+      sourceType?: MemorySourceType;
+      documentId?: string;
+      chatSessionId?: string;
+      since?: string;
+      page?: number;
+      pageSize?: number;
+      signal?: AbortSignal;
+    }): Promise<PaginatedResult<MemoryFact>> {
+      const result = await request<MemoryFact[]>("/memory/entries/facts", {
+        query: {
+          status: params?.status,
+          subjectNodeId: params?.subjectNodeId,
+          sourceType: params?.sourceType,
+          documentId: params?.documentId,
+          chatSessionId: params?.chatSessionId,
+          since: params?.since,
+          page: params?.page,
+          pageSize: params?.pageSize,
+        },
+        signal: params?.signal,
+      });
+      const pagination = parsePagination(result.headers);
+      return { items: result.data, ...pagination };
+    },
+
+    async getFactsByNodeId(nodeId: string, signal?: AbortSignal): Promise<MemoryFact[]> {
+      const result = await request<MemoryFact[]>(`/graph/nodes/${nodeId}/facts`, { signal });
+      return result.data;
+    },
+
+    async createFact(
+      payload: {
+        subjectNodeId: string;
+        predicate: string;
+        objectNodeId?: string;
+        objectText?: string;
+        valueType?: FactValueType;
+      },
+      signal?: AbortSignal,
+    ): Promise<MemoryFact> {
+      const result = await request<MemoryFact>("/memory/entries/facts", {
+        method: "POST",
+        json: payload,
+        signal,
+      });
+      return result.data;
+    },
+
+    async updateFact(
+      id: string,
+      payload: {
+        predicate?: string;
+        objectNodeId?: string;
+        objectText?: string;
+        valueType?: FactValueType;
+        confidence?: number;
+      },
+      signal?: AbortSignal,
+    ): Promise<MemoryFact> {
+      const result = await request<MemoryFact>(`/memory/entries/facts/${id}`, {
+        method: "PATCH",
+        json: payload,
+        signal,
+      });
+      return result.data;
+    },
+
+    async reviewFact(
+      id: string,
+      action: ReviewAction,
+      note?: string,
+      signal?: AbortSignal,
+    ): Promise<MemoryFact> {
+      const result = await request<MemoryFact>(`/memory/entries/facts/${id}/review`, {
+        method: "PATCH",
+        json: { action, ...(note !== undefined ? { note } : {}) },
+        signal,
+      });
+      return result.data;
+    },
+
+    async deleteFact(id: string, signal?: AbortSignal): Promise<void> {
+      await request<void>(`/memory/entries/facts/${id}`, {
+        method: "DELETE",
+        signal,
+      });
+    },
+
+    async getEvidence(factId: string, signal?: AbortSignal): Promise<MemoryEvidence[]> {
+      const result = await request<MemoryEvidence[]>(`/memory/entries/facts/${factId}/evidence`, {
+        signal,
+      });
+      return result.data;
+    },
+  },
 };
 
 export type ApiClient = typeof apiClient;

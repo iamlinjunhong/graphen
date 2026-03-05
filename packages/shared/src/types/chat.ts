@@ -34,6 +34,7 @@ export interface ChatMessage {
   sessionId: string;
   role: ChatRole;
   content: string;
+  metadata?: Record<string, unknown>;
   sources?: ChatSource[];
   graphContext?: {
     nodes: string[];

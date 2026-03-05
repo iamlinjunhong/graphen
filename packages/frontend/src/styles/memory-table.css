@@ -1,0 +1,342 @@
+.memory-table-shell {
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: var(--bg-surface);
+  overflow-x: auto;
+}
+
+.memory-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 760px;
+}
+
+.memory-table thead th {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--bg-secondary);
+}
+
+.memory-table tbody td {
+  font-size: 13px;
+  color: var(--text-primary);
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: middle;
+}
+
+.memory-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.memory-table-row {
+  cursor: pointer;
+}
+
+.memory-table-row:hover td {
+  background: var(--bg-secondary);
+}
+
+.memory-table-row.is-selected td {
+  background: rgba(217, 119, 87, 0.14);
+}
+
+.memory-table-row.is-selected:hover td {
+  background: rgba(217, 119, 87, 0.2);
+}
+
+.memory-table-row.is-muted td {
+  color: var(--text-muted);
+}
+
+.memory-cell-checkbox {
+  width: 42px;
+}
+
+.memory-cell-checkbox input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+}
+
+.memory-cell-content {
+  max-width: 420px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.memory-row-empty {
+  color: var(--text-muted);
+}
+
+.memory-row-categories {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.memory-category-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.memory-category-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.25;
+  font-weight: 500;
+}
+
+.memory-category-badge.is-sand {
+  color: #7a4f24;
+  border-color: rgba(217, 119, 87, 0.35);
+  background: rgba(217, 119, 87, 0.14);
+}
+
+.memory-category-badge.is-sea {
+  color: #1a5fb4;
+  border-color: rgba(53, 132, 228, 0.3);
+  background: rgba(53, 132, 228, 0.13);
+}
+
+.memory-category-badge.is-moss {
+  color: #0b6f46;
+  border-color: rgba(32, 170, 111, 0.3);
+  background: rgba(32, 170, 111, 0.13);
+}
+
+.memory-category-badge.is-rose {
+  color: #8f2f4a;
+  border-color: rgba(233, 97, 133, 0.32);
+  background: rgba(233, 97, 133, 0.14);
+}
+
+.memory-category-badge.is-sky {
+  color: #155f75;
+  border-color: rgba(34, 197, 221, 0.3);
+  background: rgba(34, 197, 221, 0.14);
+}
+
+.memory-category-badge.is-slate {
+  color: #4b5563;
+  border-color: rgba(148, 163, 184, 0.35);
+  background: rgba(148, 163, 184, 0.14);
+}
+
+.memory-category-badge.is-overflow {
+  color: var(--text-secondary);
+  border-color: var(--line-soft);
+  border-style: dashed;
+  background: var(--bg-secondary);
+}
+
+.memory-category-badge.is-muted {
+  color: var(--text-muted);
+  border-color: var(--line-soft);
+  background: rgba(148, 163, 184, 0.14);
+}
+
+.memory-category-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line-soft);
+  background: var(--bg-secondary);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.memory-category-chip.is-overflow {
+  border-style: dashed;
+}
+
+.memory-source-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line-soft);
+  background: var(--bg-secondary);
+  font-size: 12px;
+}
+
+.memory-entry-state-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.memory-entry-state-badge.is-active {
+  color: #0b6f46;
+  background: rgba(32, 170, 111, 0.18);
+  border-color: rgba(32, 170, 111, 0.32);
+}
+
+.memory-entry-state-badge.is-paused {
+  color: #925e03;
+  background: rgba(234, 179, 8, 0.2);
+  border-color: rgba(234, 179, 8, 0.35);
+}
+
+.memory-entry-state-badge.is-archived {
+  color: var(--text-secondary);
+  background: rgba(148, 163, 184, 0.2);
+  border-color: rgba(148, 163, 184, 0.38);
+}
+
+.memory-entry-state-badge.is-deleted {
+  color: #a0303e;
+  background: rgba(204, 90, 108, 0.2);
+  border-color: rgba(204, 90, 108, 0.34);
+}
+
+.memory-cell-time {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.memory-cell-actions {
+  position: relative;
+  width: 70px;
+}
+
+.memory-row-action-button {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.memory-row-action-button[aria-expanded="true"] {
+  border-color: rgba(217, 119, 87, 0.45);
+  color: var(--text-primary);
+  background: rgba(217, 119, 87, 0.14);
+}
+
+.memory-row-action-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 8px;
+  z-index: 14;
+  min-width: 132px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.16);
+  padding: 6px;
+  display: grid;
+  gap: 2px;
+}
+
+.memory-row-action-item {
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: left;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.memory-row-action-item:hover {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.memory-row-action-item.is-danger {
+  color: #b64040;
+}
+
+.memory-table-empty {
+  padding: 36px 12px !important;
+  text-align: center;
+}
+
+.memory-table-empty p {
+  margin: 0;
+  font-size: 15px;
+  color: var(--text-primary);
+}
+
+.memory-table-empty span {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.memory-table-skeleton tbody td {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.memory-skeleton-block {
+  display: inline-block;
+  height: 12px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(148, 163, 184, 0.2), rgba(148, 163, 184, 0.4), rgba(148, 163, 184, 0.2));
+  background-size: 200% 100%;
+  animation: memoryPulse 1.2s ease-in-out infinite;
+}
+
+.memory-skeleton-checkbox {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+}
+
+.memory-skeleton-content {
+  width: 72%;
+}
+
+.memory-skeleton-category {
+  width: 56px;
+}
+
+.memory-skeleton-source {
+  width: 70px;
+}
+
+.memory-skeleton-status {
+  width: 56px;
+}
+
+.memory-skeleton-time {
+  width: 48px;
+}
+
+.memory-skeleton-action {
+  width: 24px;
+}
+
+@keyframes memoryPulse {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}

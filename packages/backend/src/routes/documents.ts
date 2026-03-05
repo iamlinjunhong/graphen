@@ -9,6 +9,7 @@ import { z } from "zod";
 import type {
   AbstractGraphStore,
   Document,
+  DocumentStore,
   DocumentStatus,
   DocumentStatusResponse,
   GetDocumentContentResponse,
@@ -27,9 +28,11 @@ import {
   ensureGraphStoreConnected,
   getDocumentPipelineSingleton,
   getGraphStoreSingleton,
-  getLLMServiceSingleton
+  getLLMServiceSingleton,
+  getPgDocumentStoreSingleton
 } from "../runtime/graphRuntime.js";
 import type { LLMServiceLike } from "../services/llmTypes.js";
+import type { PgDocumentStoreLike } from "../services/PgDocumentStore.js";
 import { logger } from "../utils/logger.js";
 
 const upload = multer({
@@ -81,6 +84,7 @@ interface DocumentStatusSnapshot {
 
 interface CreateDocumentsRouterOptions {
   store?: AbstractGraphStore;
+  documentStore?: DocumentStore | PgDocumentStoreLike;
   llmService?: LLMServiceLike;
   pipeline?: DocumentPipeline;
   ensureStoreConnected?: () => Promise<void>;
@@ -121,17 +125,34 @@ function sendSseEvent(res: Response, eventName: string, payload: unknown): void 
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
+function isDocumentStoreLike(candidate: unknown): candidate is DocumentStore | PgDocumentStoreLike {
+  if (!candidate || typeof candidate !== "object") {
+    return false;
+  }
+
+  const value = candidate as Record<string, unknown>;
+  return (
+    typeof value.saveDocument === "function" &&
+    typeof value.getDocuments === "function" &&
+    typeof value.deleteDocumentAndRelated === "function" &&
+    typeof value.saveChunks === "function" &&
+    typeof value.getChunksByDocument === "function"
+  );
+}
+
 export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}): Router {
-  const store = options.store ?? getGraphStoreSingleton();
+  const graphStore = options.store ?? getGraphStoreSingleton();
+  const documentStore = options.documentStore
+    ?? (isDocumentStoreLike(options.store) ? options.store : getPgDocumentStoreSingleton());
   const llmService = options.llmService ?? getLLMServiceSingleton();
   const pipeline =
     options.pipeline ??
-    (options.store || options.llmService
-      ? new DocumentPipeline(store, llmService)
+    (options.store || options.llmService || options.documentStore
+      ? new DocumentPipeline(graphStore, llmService, undefined, {}, { documentStore })
       : getDocumentPipelineSingleton());
   const ensureStoreConnected =
     options.ensureStoreConnected ??
-    (options.store ? () => store.connect() : () => ensureGraphStoreConnected(store));
+    (options.store ? () => graphStore.connect() : () => ensureGraphStoreConnected(graphStore));
   const uploadsDir = resolve(options.uploadsDir ?? "data/uploads");
   const cacheDir = resolve(options.cacheDir ?? appConfig.CACHE_DIR);
   const contentStore = new DocumentContentStore({ uploadsDir });
@@ -164,7 +185,7 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
   });
 
   const getDocumentById = async (id: string): Promise<Document | null> => {
-    const documents = await store.getDocuments();
+    const documents = await documentStore.getDocuments();
     return documents.find((item) => item.id === id) ?? null;
   };
 
@@ -207,24 +228,28 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
           let chunkCount: number | undefined;
           let entityCount: number | undefined;
           try {
-            const chunks = await store.getChunksByDocument(document.id);
+            const chunks = await documentStore.getChunksByDocument(document.id);
             chunkCount = chunks.length;
-            const stats = await store.getStats();
             // entityCount from document metadata if available, otherwise omit
             entityCount = latest.metadata.entityCount as number | undefined;
           } catch {
             // Non-critical — proceed without metadata
           }
 
-          rememberStatus({
+          const completedSnapshot: DocumentStatusSnapshot = {
             id: latest.id,
             status: latest.status,
             phase: "completed",
             progress: 100,
-            chunkCount,
-            entityCount,
             updatedAt: new Date().toISOString()
-          });
+          };
+          if (typeof chunkCount === "number") {
+            completedSnapshot.chunkCount = chunkCount;
+          }
+          if (typeof entityCount === "number") {
+            completedSnapshot.entityCount = entityCount;
+          }
+          rememberStatus(completedSnapshot);
         }
       } catch (error) {
         const message =
@@ -245,7 +270,7 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
         };
 
         try {
-          await store.saveDocument(errorDocument);
+          await documentStore.saveDocument(errorDocument);
         } catch (saveError) {
           logger.error(
             {
@@ -329,7 +354,7 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
     try {
       await mkdir(documentUploadDir, { recursive: true });
       await writeFile(savedFilePath, req.file.buffer);
-      await store.saveDocument(initialDocument);
+      await documentStore.saveDocument(initialDocument);
     } catch (error) {
       await rm(documentUploadDir, { recursive: true, force: true });
       logger.error({ err: error }, "Failed to persist uploaded file");
@@ -374,7 +399,7 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
       >;
       const offset = (page - 1) * pageSize;
 
-      const allDocuments = await store.getDocuments();
+      const allDocuments = await documentStore.getDocuments();
       const filtered =
         status === undefined
           ? allDocuments
@@ -480,7 +505,15 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
         });
       }
 
-      await store.deleteDocumentAndRelated(documentId);
+      await documentStore.deleteDocumentAndRelated(documentId);
+      // Clean up graph nodes/edges sourced by this document
+      if (typeof (graphStore as Record<string, unknown>).removeDocumentData === "function") {
+        try {
+          await (graphStore as unknown as { removeDocumentData(docId: string): Promise<void> }).removeDocumentData(documentId);
+        } catch (error) {
+          logger.error({ err: error, documentId }, "Failed to remove document data from graph store");
+        }
+      }
       await rm(resolve(uploadsDir, documentId), { recursive: true, force: true });
       await rm(resolve(cacheDir, documentId), { recursive: true, force: true });
       statusSnapshots.delete(documentId);
@@ -620,7 +653,7 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
         metadata: {}
       };
 
-      await store.saveDocument(reparseDocument);
+      await documentStore.saveDocument(reparseDocument);
       rememberStatus({
         id: documentId,
         status: "uploading",
@@ -655,7 +688,7 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
         return res.status(404).json({ error: "Document not found" });
       }
 
-      const chunks = await store.getChunksByDocument(documentId);
+      const chunks = await documentStore.getChunksByDocument(documentId);
       const previewChunks = chunks
         .sort((a, b) => a.index - b.index)
         .slice(0, 3);
@@ -671,5 +704,3 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
 
   return documentsRouter;
 }
-
-export const documentsRouter = createDocumentsRouter();

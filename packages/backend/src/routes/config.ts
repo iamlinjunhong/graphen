@@ -46,24 +46,27 @@ interface CreateConfigRouterOptions {
 }
 
 export function createConfigRouter(options: CreateConfigRouterOptions = {}): Router {
-  const store = options.store ?? getGraphStoreSingleton();
-  const llmService = options.llmService ?? getLLMServiceSingleton();
+  const providedStore = options.store;
+  const resolveStore = (): AbstractGraphStore => options.store ?? getGraphStoreSingleton();
+  const resolveLlmService = (): LLMServiceLike => options.llmService ?? getLLMServiceSingleton();
   const ensureStoreConnected =
     options.ensureStoreConnected ??
-    (options.store ? () => store.connect() : () => ensureGraphStoreConnected(store));
+    (providedStore
+      ? () => providedStore.connect()
+      : () => ensureGraphStoreConnected(resolveStore()));
 
   const checkNeo4j =
     options.checkNeo4j ??
     (() =>
       checkNeo4jConnection({
-        store,
+        store: resolveStore(),
         ensureStoreConnected
       }));
   const checkLlm =
     options.checkLlm ??
     (() =>
       checkLlmConnection({
-        llmService
+        llmService: resolveLlmService()
       }));
 
   const runtimeConfig: RuntimeConfigSnapshot = {
@@ -147,5 +150,3 @@ export function createConfigRouter(options: CreateConfigRouterOptions = {}): Rou
 
   return configRouter;
 }
-
-export const configRouter = createConfigRouter();

@@ -1,0 +1,68 @@
+.memory-pagination {
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: var(--bg-surface);
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.memory-pagination-left label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.memory-pagination-left select {
+  height: 30px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  padding: 0 8px;
+  font-size: 13px;
+}
+
+.memory-pagination-center {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.memory-pagination-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.memory-pagination-right button {
+  min-width: 32px;
+  height: 30px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: 0 8px;
+  cursor: pointer;
+}
+
+.memory-pagination-right button:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--text-primary);
+}
+
+.memory-pagination-right button.is-active {
+  border-color: rgba(217, 119, 87, 0.5);
+  background: rgba(217, 119, 87, 0.16);
+  color: var(--text-primary);
+}
+
+.memory-pagination-right button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}

@@ -22,7 +22,7 @@ export function TopBar({
         <div className="brand-dot">
           <Box size={18} strokeWidth={2.5} />
         </div>
-        <h1 className="brand-title">GraphRAG</h1>
+        <h1 className="brand-title">MemoryWaving</h1>
       </div>
 
       {/* Right actions */}

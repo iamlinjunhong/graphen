@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import type { GraphNode, InferredRelation } from "@graphen/shared";
 import { getEntityTypeLabel } from "../utils/entityTypeLabels";
+import { NodeMemorySection } from "../memory/NodeMemorySection";
 
 interface NodeDetailPanelProps {
   node: GraphNode | null;
@@ -77,8 +78,9 @@ export function NodeDetailPanel({
                     type="button"
                     className="chip"
                     onClick={() => onFilterDocument(documentId)}
+                    title={documentLabels.get(documentId) ? undefined : documentId}
                   >
-                    {documentLabels.get(documentId) ?? documentId}
+                    {documentLabels.get(documentId) ?? `${documentId.slice(0, 8)}…`}
                   </button>
                 ))
               )}
@@ -95,6 +97,8 @@ export function NodeDetailPanel({
               )}
             </div>
           </section>
+
+          <NodeMemorySection nodeId={node.id} nodeName={node.name} />
 
           {inferredRelations && inferredRelations.length > 0 ? (
             <section>

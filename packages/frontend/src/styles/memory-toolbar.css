@@ -1,0 +1,211 @@
+.memory-toolbar {
+  border: 1px solid var(--line-soft);
+  background: var(--bg-surface);
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.memory-toolbar-search {
+  min-width: min(420px, 100%);
+  flex: 1 1 320px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line-soft);
+  background: var(--bg-secondary);
+  border-radius: 9px;
+  padding: 0 10px;
+}
+
+.memory-toolbar-search svg {
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.memory-toolbar-search input {
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  width: 100%;
+  height: 36px;
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.memory-toolbar-search input::placeholder {
+  color: var(--text-muted);
+}
+
+.memory-toolbar-clear {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.memory-toolbar-clear:hover {
+  color: var(--text-primary);
+}
+
+.memory-toolbar-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.memory-toolbar-button {
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: 7px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.memory-toolbar-button:hover,
+.memory-toolbar-button[aria-expanded="true"] {
+  border-color: rgba(217, 119, 87, 0.4);
+  color: var(--text-primary);
+}
+
+.memory-toolbar-button.is-batch {
+  background: rgba(217, 119, 87, 0.12);
+}
+
+.memory-toolbar-create {
+  border: none;
+  border-radius: 9px;
+  background: var(--accent-primary);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+
+.memory-toolbar-create:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.memory-toolbar-selection {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.memory-sort-dropdown {
+  position: relative;
+}
+
+.memory-sort-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 12;
+  width: 220px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.15);
+  padding: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.memory-sort-group {
+  display: grid;
+  gap: 4px;
+}
+
+.memory-sort-group p {
+  margin: 0 0 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.memory-sort-option {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 6px 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.memory-sort-option:hover {
+  border-color: var(--line-soft);
+  background: var(--bg-secondary);
+}
+
+.memory-sort-option.is-active {
+  border-color: rgba(217, 119, 87, 0.35);
+  color: var(--text-primary);
+  background: rgba(217, 119, 87, 0.14);
+}
+
+.memory-sort-direction-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.memory-batch-dropdown {
+  position: relative;
+}
+
+.memory-batch-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 12;
+  min-width: 140px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.15);
+  padding: 6px;
+  display: grid;
+}
+
+.memory-batch-option {
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: left;
+  padding: 7px 8px;
+  cursor: pointer;
+}
+
+.memory-batch-option:hover {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+@media (max-width: 900px) {
+  .memory-toolbar-search {
+    min-width: 0;
+  }
+
+  .memory-toolbar-actions {
+    width: 100%;
+  }
+}

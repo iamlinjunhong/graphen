@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ChatMessage, ChatRole, ChatSession, ChatSource, InferredRelation, SourcePath } from "@graphen/shared";
-import type { ChatStoreLike } from "./ChatStore.js";
+import type { ChatStoreLike } from "./chatStoreTypes.js";
 
 export class InMemoryChatStore implements ChatStoreLike {
   private readonly sessions = new Map<string, ChatSession>();
@@ -52,6 +52,7 @@ export class InMemoryChatStore implements ChatStoreLike {
     sessionId: string;
     role: ChatRole;
     content: string;
+    metadata?: Record<string, unknown>;
     sources?: ChatSource[];
     graphContext?: { nodes: string[]; edges: string[] };
     sourcePaths?: SourcePath[];
@@ -70,6 +71,9 @@ export class InMemoryChatStore implements ChatStoreLike {
       content: input.content,
       createdAt: new Date()
     };
+    if (input.metadata && Object.keys(input.metadata).length > 0) {
+      message.metadata = { ...input.metadata };
+    }
     if (input.sources) {
       message.sources = input.sources;
     }

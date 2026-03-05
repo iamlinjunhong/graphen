@@ -1,5 +1,5 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { CloudUpload, MessageSquare, Network } from "lucide-react";
+import { Brain, CloudUpload, MessageSquare, Network } from "lucide-react";
 import type { ComponentType } from "react";
 import { NavLink } from "react-router-dom";
 
@@ -16,6 +16,7 @@ interface SidebarProps {
 const navItems: NavigationItem[] = [
   { to: "/chat", label: "AI Chat", icon: MessageSquare },
   { to: "/documents", label: "Data Upload", icon: CloudUpload },
+  { to: "/memory", label: "记忆编织", icon: Brain },
   { to: "/graph", label: "Graph Explorer", icon: Network }
 ];
 
