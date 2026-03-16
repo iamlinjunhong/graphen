@@ -1,0 +1,35 @@
+# ─── 环境准备（仅首次） ─────────────────────────
+
+python3 -m venv scripts/.venv
+source scripts/.venv/bin/activate
+pip install psycopg2-binary neo4j
+
+# ─── 激活虚拟环境（每次使用前） ──────────────────
+
+source scripts/.venv/bin/activate
+
+# ─── PG 清理 ───────────────────────────────────
+
+# 预览模式（不执行，只统计）
+python3 scripts/cleanup_pg.py --dry-run
+
+# 正式执行，保留 7 天
+python3 scripts/cleanup_pg.py --retention-days=7 --verbose
+
+# ⚠️ 清空 PG 所有 memory/document 数据（需输入 yes 确认）
+python3 scripts/cleanup_pg.py --purge-all
+
+# ─── Neo4j 清理 ─────────────────────────────────
+
+# 预览模式
+python3 scripts/cleanup_neo4j.py --dry-run
+
+# 正式执行 + PG 交叉检查
+python3 scripts/cleanup_neo4j.py --verbose --with-pg-cross-check
+
+# ⚠️ 清空 Neo4j 所有节点和边（需输入 yes 确认）
+python3 scripts/cleanup_neo4j.py --purge-all
+
+# ─── 一键清空 PG + Neo4j ────────────────────────
+
+python3 scripts/cleanup_pg.py --purge-all && python3 scripts/cleanup_neo4j.py --purge-all

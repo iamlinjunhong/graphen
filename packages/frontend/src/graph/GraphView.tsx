@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GraphCanvasRef } from "reagraph";
+import { useLocation } from "react-router-dom";
 import { useGraphData } from "../hooks/useGraphData";
 import { apiClient } from "../services/api";
 import { useGraphStore } from "../stores/useGraphStore";
@@ -32,6 +33,7 @@ export function GraphView() {
     reagraph,
     isLoading,
     error,
+    loadGraphData,
     loadInitialGraphData,
     expandNode
   } = useGraphData({
@@ -53,6 +55,7 @@ export function GraphView() {
   const toggleNodeTypeFilter = useGraphStore((state) => state.toggleNodeTypeFilter);
   const toggleDocumentFilter = useGraphStore((state) => state.toggleDocumentFilter);
   const clearFilters = useGraphStore((state) => state.clearFilters);
+  const location = useLocation();
 
   const graphRef = useRef<GraphCanvasRef | null>(null);
 
@@ -60,6 +63,15 @@ export function GraphView() {
   const [viewError, setViewError] = useState<string | null>(null);
   const [expandedNodeIds, setExpandedNodeIds] = useState<Set<string>>(new Set());
   const [expandingNodeId, setExpandingNodeId] = useState<string | null>(null);
+
+  const focusNodeId = useMemo(() => {
+    const raw = new URLSearchParams(location.search).get("focusNode");
+    if (!raw) {
+      return null;
+    }
+    const trimmed = raw.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }, [location.search]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -122,9 +134,18 @@ export function GraphView() {
       }
 
       try {
-        const docNames = await loadInitialGraphData();
+        const docNames = focusNodeId
+          ? await loadGraphData({
+            centerNodeIds: [focusNodeId],
+            maxDepth: 2,
+            maxNodes: 120
+          })
+          : await loadInitialGraphData();
         // Merge document names from graph API as fallback
         mergeDocumentNames(docNames);
+        if (focusNodeId) {
+          setSelectedNodeId(focusNodeId);
+        }
       } catch {
         // error is already handled inside loadInitialGraphData
       }
@@ -133,7 +154,7 @@ export function GraphView() {
     void init();
 
     return () => controller.abort();
-  }, [loadInitialGraphData]);
+  }, [focusNodeId, loadGraphData, loadInitialGraphData, setSelectedNodeId]);
 
   const nodeTypes = useMemo(
     () => Array.from(new Set(nodes.map((node) => node.type))).sort((a, b) => a.localeCompare(b)),
@@ -393,7 +414,15 @@ export function GraphView() {
                   className="docs-action-button"
                   onClick={() => {
                     setExpandedNodeIds(new Set());
-                    void loadInitialGraphData();
+                    if (focusNodeId) {
+                      void loadGraphData({
+                        centerNodeIds: [focusNodeId],
+                        maxDepth: 2,
+                        maxNodes: 120
+                      });
+                    } else {
+                      void loadInitialGraphData();
+                    }
                   }}
                   disabled={isLoading}
                 >

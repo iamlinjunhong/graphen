@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { EventEmitter } from "node:events";
 import { RecursiveCharacterTextSplitter } from "langchain/text_splitter";
 import type { AbstractGraphStore, CandidateFact, Document, DocumentChunk, MemoryServiceLike } from "@graphen/shared";
+import type { Pool } from "pg";
 import { appConfig } from "../config.js";
 import { MarkdownParser, PDFParser, TextParser } from "../parsers/index.js";
 import type { MemoryExtractor } from "../services/MemoryExtractor.js";
@@ -41,6 +42,7 @@ export class DocumentPipeline {
   private readonly memoryService: MemoryServiceLike | undefined;
   private readonly memoryExtractor: MemoryExtractor | undefined;
   private readonly documentStore: DocumentWriteStoreLike;
+  private readonly pgPool: Pool | undefined;
 
   constructor(
     private readonly store: AbstractGraphStore,
@@ -51,6 +53,7 @@ export class DocumentPipeline {
       memoryService?: MemoryServiceLike;
       memoryExtractor?: MemoryExtractor;
       documentStore?: DocumentWriteStoreLike;
+      pgPool?: Pool;
     }
   ) {
     this.eventEmitter = eventEmitter ?? new EventEmitter();
@@ -69,6 +72,7 @@ export class DocumentPipeline {
         throw new Error("DocumentPipeline requires a documentStore for PG chunk writes");
       }
     };
+    this.pgPool = deps?.pgPool;
   }
 
   getEventEmitter(): EventEmitter {
@@ -101,20 +105,43 @@ export class DocumentPipeline {
       this.emitStatus(document.id, "resolving", 70);
       const resolvedGraph = this.entityResolver.resolve(extractions, document.id);
 
-      await this.reconcileWithExistingNodes(resolvedGraph);
-
-      if (this.memoryExtractor) {
-        this.enqueueMemoryExtractions(document.id, chunks);
-      } else {
-        // Legacy fallback used by tests and in-memory mode.
-        this.generateMemoryFacts(resolvedGraph, document.id);
+      // Reparse: 先清理旧文档关联的记忆和图谱数据，再 reconcile 和写入新数据
+      // 必须在 reconcileWithExistingNodes 之前清理，否则 reconcile 会 remap 到
+      // 即将被删除的旧节点 id，导致 saveNodes 重建的节点 id 与旧节点冲突。
+      if (forceRebuild) {
+        await this.cleanupOldDocumentData(document.id);
       }
+
+      await this.reconcileWithExistingNodes(resolvedGraph);
 
       this.emitStatus(document.id, "embedding", 80);
       await this.generateEmbeddings(document.id, chunks);
 
       this.emitStatus(document.id, "saving", 90);
       const savedDocument = await this.saveToStore(document, chunks, resolvedGraph);
+
+      // 记忆提取必须在 saveToStore 之后执行：
+      // 1. 确保 Entity 节点已写入 Neo4j，syncSingleFact 的 OPTIONAL MATCH 能找到它们
+      // 2. await 所有提取任务完成后才标记 pipeline completed
+      this.emitStatus(document.id, "memory", 95, "提取记忆中...");
+      if (this.memoryExtractor) {
+        // 构建 nodeIdMap：将图谱节点名称映射到节点 id，
+        // 让 syncSingleFact 能复用 saveNodes 创建的节点，避免重复节点。
+        const nodeIdMap = new Map<string, string>();
+        for (const node of resolvedGraph.nodes) {
+          const lowerName = node.name.trim().toLowerCase().replace(/\s+/g, " ");
+          if (!nodeIdMap.has(node.name)) {
+            nodeIdMap.set(node.name, node.id);
+          }
+          if (!nodeIdMap.has(lowerName)) {
+            nodeIdMap.set(lowerName, node.id);
+          }
+        }
+        await this.awaitMemoryExtractions(document.id, chunks, nodeIdMap);
+      } else {
+        // Legacy fallback used by tests and in-memory mode.
+        this.generateMemoryFacts(resolvedGraph, document.id);
+      }
 
       this.emitStatus(document.id, "completed", 100);
       return {
@@ -272,34 +299,46 @@ export class DocumentPipeline {
     return savedDocument;
   }
 
-  private enqueueMemoryExtractions(documentId: string, chunks: DocumentChunk[]): void {
+  /**
+   * 等待所有 chunk 的记忆提取完成。
+   * 必须在 saveToStore 之后调用，确保 Entity 节点已在 Neo4j 中。
+   */
+  private async awaitMemoryExtractions(
+    documentId: string,
+    chunks: DocumentChunk[],
+    nodeIdMap?: Map<string, string>
+  ): Promise<void> {
     if (!this.memoryExtractor || chunks.length === 0) {
       return;
     }
 
-    let enqueued = 0;
+    const tasks: Array<Promise<unknown>> = [];
     for (const chunk of chunks) {
       const message = chunk.content.trim();
       if (message.length === 0) {
         continue;
       }
 
-      enqueued += 1;
-      void this.memoryExtractor.enqueue({
-        message,
-        sourceType: "document",
-        documentId,
-        chunkId: chunk.id
-      }).catch((error) => {
-        logger.warn(
-          { err: error, documentId, chunkId: chunk.id },
-          "Document memory extraction failed"
-        );
-      });
+      tasks.push(
+        this.memoryExtractor.enqueue({
+          message,
+          sourceType: "document",
+          documentId,
+          chunkId: chunk.id,
+          nodeIdMap
+        }).catch((error) => {
+          logger.warn(
+            { err: error, documentId, chunkId: chunk.id },
+            "Document memory extraction failed"
+          );
+        })
+      );
     }
 
-    if (enqueued > 0) {
-      logger.info({ documentId, enqueued }, "Document memory extraction enqueued");
+    if (tasks.length > 0) {
+      logger.info({ documentId, enqueued: tasks.length }, "Document memory extraction started");
+      await Promise.all(tasks);
+      logger.info({ documentId, completed: tasks.length }, "Document memory extraction completed");
     }
   }
 
@@ -408,6 +447,88 @@ export class DocumentPipeline {
       const remappedTarget = idRemap.get(edge.targetNodeId);
       if (remappedTarget) {
         edge.targetNodeId = remappedTarget;
+      }
+    }
+  }
+
+  /**
+   * Reparse 前清理旧文档关联的数据:
+   * 1. 删除该文档关联的 memory_entries（通过 evidence.document_id 反查）
+   * 2. 清理 Neo4j 中仅由该文档贡献的节点/边
+   *
+   * 这样重新解析时，记忆界面不会出现旧条目堆积，知识图谱不会出现重复节点。
+   */
+  private async cleanupOldDocumentData(documentId: string): Promise<void> {
+    // 1. 清理旧的 memory entries / facts / evidence
+    if (this.pgPool) {
+      try {
+        // 1a. 找出该文档关联的所有 entry ids
+        const evidenceResult = await this.pgPool.query<{ entry_id: string }>(
+          `SELECT DISTINCT entry_id FROM memory_evidence WHERE document_id = $1`,
+          [documentId]
+        );
+        const entryIds = evidenceResult.rows.map((r) => r.entry_id);
+
+        if (entryIds.length > 0) {
+          // 1b. 删除该文档的 evidence 记录
+          await this.pgPool.query(
+            `DELETE FROM memory_evidence WHERE document_id = $1`,
+            [documentId]
+          );
+
+          // 1c. 对于这些 entries，软删除不再有任何 evidence 的 facts
+          //     （即该 fact 的所有 evidence 都来自本文档，已在 1b 中删除）
+          await this.pgPool.query(
+            `
+              UPDATE memory_facts
+              SET fact_state = 'deleted',
+                  deleted_at = NOW(),
+                  neo4j_synced = FALSE,
+                  updated_at = NOW()
+              WHERE entry_id = ANY($1::uuid[])
+                AND deleted_at IS NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM memory_evidence ev
+                  WHERE ev.fact_id = memory_facts.id
+                )
+            `,
+            [entryIds]
+          );
+
+          // 1d. 删除不再有任何 active facts 的 entries
+          await this.pgPool.query(
+            `
+              DELETE FROM memory_entries
+              WHERE id = ANY($1::uuid[])
+                AND NOT EXISTS (
+                  SELECT 1 FROM memory_facts f
+                  WHERE f.entry_id = memory_entries.id
+                    AND f.deleted_at IS NULL
+                    AND f.fact_state = 'active'
+                )
+            `,
+            [entryIds]
+          );
+        }
+
+        logger.info({ documentId, entryCount: entryIds.length }, "Reparse: cleaned up old memory data");
+      } catch (error) {
+        const pgErr = error as { code?: string };
+        // 42P01 = undefined_table，memory 表可能不存在
+        if (pgErr.code !== "42P01") {
+          logger.warn({ err: error, documentId }, "Reparse: failed to clean up old memory entries");
+        }
+      }
+    }
+
+    // 2. 清理 Neo4j 中旧文档关联的节点和边
+    const storeAny = this.store as unknown as Record<string, unknown>;
+    if (typeof storeAny.removeDocumentData === "function") {
+      try {
+        await (storeAny.removeDocumentData as (docId: string) => Promise<void>)(documentId);
+        logger.info({ documentId }, "Reparse: cleaned up old graph data");
+      } catch (error) {
+        logger.warn({ err: error, documentId }, "Reparse: failed to clean up old graph data");
       }
     }
   }

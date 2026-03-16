@@ -593,7 +593,7 @@ class InMemoryGraphSyncClient {
           created_at: fact.created_at
         }));
 
-      return { rows: rows as T[], rowCount: rows.length };
+      return { rows: rows as unknown as T[], rowCount: rows.length };
     }
 
     if (sql.includes("set neo4j_retry_count = neo4j_retry_count + 1")) {
@@ -1143,11 +1143,12 @@ async function runT721DocumentToMemoryToGraph(
 
   const memoryService = new MemoryService(store);
   const extractor = new MemoryExtractor(llm, memoryService, {}, { entryStore: store, pgPool: pool });
+  const chunkId = processed.chunks[0]?.id;
   const extractionResult = await extractor.enqueue({
     message: content,
     sourceType: "document",
     documentId,
-    chunkId: processed.chunks[0]?.id
+    ...(chunkId !== undefined ? { chunkId } : {})
   });
   assert(
     extractionResult.created + extractionResult.updated >= 1,
@@ -1182,11 +1183,12 @@ async function runT721DocumentToMemoryToGraph(
 
   let failedAsExpected = false;
   try {
+    const failChunkId = processed.chunks[0]?.id;
     await failingExtractor.enqueue({
       message: `${content}（failure probe）`,
       sourceType: "document",
       documentId,
-      chunkId: processed.chunks[0]?.id
+      ...(failChunkId !== undefined ? { chunkId: failChunkId } : {})
     });
   } catch {
     failedAsExpected = true;
@@ -1285,7 +1287,7 @@ async function runT722ChatExtractionStoreRetrieve(
     // consume stream
   }
 
-  const contextText = llm.lastChatContext?.graphContext ?? "";
+  const contextText = (llm.lastChatContext as RAGContext | null)?.graphContext ?? "";
   assert(contextText.includes("记忆条目（pgvector 召回）"), "T7.2.2 expected pgvector memory context injection");
   assert(contextText.includes(runTag), "T7.2.2 expected retrieved context to include stored chat memory");
 }

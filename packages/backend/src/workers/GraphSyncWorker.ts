@@ -14,12 +14,23 @@ interface SyncFactRow {
   created_at: string;
 }
 
+interface DeleteSyncFactRow {
+  id: string;
+  entry_id: string;
+  subject_node_id: string | null;
+  subject_text: string;
+  normalized_fact_key: string;
+}
+
 export interface GraphSyncWorkerStats {
   fetched: number;
   synced: number;
   failed: number;
   maxLagMs: number;
   durationMs: number;
+  deleteFetched: number;
+  deleteSynced: number;
+  deleteFailed: number;
 }
 
 export interface Neo4jSyncTargetLike {
@@ -114,89 +125,156 @@ export class GraphSyncWorker {
 
   private async syncBatch(): Promise<GraphSyncWorkerStats> {
     const startedAt = Date.now();
-    const client = await this.pgPool.connect();
 
+    // --- Phase 1: Upsert sync (create/update) ---
+    let fetched = 0;
+    let synced = 0;
+    let failed = 0;
+    let maxLagMs = 0;
+
+    const upsertClient = await this.pgPool.connect();
     try {
-      await client.query("BEGIN");
-      const rows = await this.fetchPendingFacts(client);
-      if (rows.length === 0) {
-        await client.query("COMMIT");
-        return {
-          fetched: 0,
-          synced: 0,
-          failed: 0,
-          maxLagMs: 0,
-          durationMs: Date.now() - startedAt
-        };
-      }
+      await upsertClient.query("BEGIN");
+      const rows = await this.fetchPendingFacts(upsertClient);
+      fetched = rows.length;
 
-      let failed = 0;
-      const syncedIds: string[] = [];
-      const now = Date.now();
-      let maxLagMs = 0;
+      if (rows.length > 0) {
+        const syncedIds: string[] = [];
+        const now = Date.now();
 
-      for (const fact of rows) {
-        const createdAtMs = new Date(fact.created_at).getTime();
-        if (Number.isFinite(createdAtMs)) {
-          maxLagMs = Math.max(maxLagMs, Math.max(0, now - createdAtMs));
+        for (const fact of rows) {
+          const createdAtMs = new Date(fact.created_at).getTime();
+          if (Number.isFinite(createdAtMs)) {
+            maxLagMs = Math.max(maxLagMs, Math.max(0, now - createdAtMs));
+          }
+
+          try {
+            await this.syncFactToNeo4j(fact);
+            syncedIds.push(fact.id);
+          } catch (error) {
+            failed += 1;
+            const reason = stringifyError(error);
+            await upsertClient.query(
+              `
+                UPDATE memory_facts
+                SET neo4j_retry_count = neo4j_retry_count + 1,
+                    neo4j_last_error = $2,
+                    updated_at = NOW()
+                WHERE id = $1::uuid
+              `,
+              [fact.id, reason]
+            );
+            logger.warn(
+              { factId: fact.id, entryId: fact.entry_id, reason },
+              "GraphSyncWorker fact sync failed"
+            );
+          }
         }
 
-        try {
-          await this.syncFactToNeo4j(fact);
-          syncedIds.push(fact.id);
-        } catch (error) {
-          failed += 1;
-          const reason = stringifyError(error);
-          await client.query(
+        if (syncedIds.length > 0) {
+          await upsertClient.query(
             `
               UPDATE memory_facts
-              SET neo4j_retry_count = neo4j_retry_count + 1,
-                  neo4j_last_error = $2,
+              SET neo4j_synced = TRUE,
+                  neo4j_synced_at = NOW(),
+                  neo4j_last_error = NULL,
                   updated_at = NOW()
-              WHERE id = $1::uuid
+              WHERE id = ANY($1::uuid[])
             `,
-            [fact.id, reason]
-          );
-          logger.warn(
-            { factId: fact.id, entryId: fact.entry_id, reason },
-            "GraphSyncWorker fact sync failed"
+            [syncedIds]
           );
         }
+        synced = syncedIds.length;
       }
 
-      if (syncedIds.length > 0) {
-        await client.query(
-          `
-            UPDATE memory_facts
-            SET neo4j_synced = TRUE,
-                neo4j_synced_at = NOW(),
-                neo4j_last_error = NULL,
-                updated_at = NOW()
-            WHERE id = ANY($1::uuid[])
-          `,
-          [syncedIds]
-        );
+      await upsertClient.query("COMMIT");
+    } catch (error) {
+      await safeRollback(upsertClient);
+      throw error;
+    } finally {
+      upsertClient.release();
+    }
+
+    // --- Phase 2: Delete sync (清理已删除 facts 在 Neo4j 中的边和孤儿节点) ---
+    let deleteFetched = 0;
+    let deleteSynced = 0;
+    let deleteFailed = 0;
+
+    const deleteClient = await this.pgPool.connect();
+    try {
+      await deleteClient.query("BEGIN");
+      const deletedRows = await this.fetchDeletedFacts(deleteClient);
+      deleteFetched = deletedRows.length;
+
+      if (deletedRows.length > 0) {
+        const deletedIds: string[] = [];
+
+        for (const fact of deletedRows) {
+          try {
+            await this.deleteFactFromNeo4j(fact);
+            deletedIds.push(fact.id);
+          } catch (error) {
+            deleteFailed += 1;
+            const reason = stringifyError(error);
+            await deleteClient.query(
+              `
+                UPDATE memory_facts
+                SET neo4j_retry_count = neo4j_retry_count + 1,
+                    neo4j_last_error = $2,
+                    updated_at = NOW()
+                WHERE id = $1::uuid
+              `,
+              [fact.id, reason]
+            );
+            logger.warn(
+              { factId: fact.id, entryId: fact.entry_id, reason },
+              "GraphSyncWorker delete-sync failed"
+            );
+          }
+        }
+
+        if (deletedIds.length > 0) {
+          await deleteClient.query(
+            `
+              UPDATE memory_facts
+              SET neo4j_synced = TRUE,
+                  neo4j_synced_at = NOW(),
+                  neo4j_last_error = NULL,
+                  updated_at = NOW()
+              WHERE id = ANY($1::uuid[])
+            `,
+            [deletedIds]
+          );
+        }
+        deleteSynced = deletedIds.length;
       }
 
-      await client.query("COMMIT");
-      const stats: GraphSyncWorkerStats = {
-        fetched: rows.length,
-        synced: syncedIds.length,
-        failed,
-        maxLagMs,
-        durationMs: Date.now() - startedAt
-      };
+      await deleteClient.query("COMMIT");
+    } catch (error) {
+      await safeRollback(deleteClient);
+      // 删除同步失败不影响整体 stats，只记录日志
+      logger.error({ err: error }, "GraphSyncWorker delete-sync batch error");
+    } finally {
+      deleteClient.release();
+    }
+
+    const stats: GraphSyncWorkerStats = {
+      fetched,
+      synced,
+      failed,
+      maxLagMs,
+      durationMs: Date.now() - startedAt,
+      deleteFetched,
+      deleteSynced,
+      deleteFailed
+    };
+    if (fetched > 0 || deleteFetched > 0) {
       logger.info(
         stats,
         "GraphSyncWorker sync batch finished"
       );
-      return stats;
-    } catch (error) {
-      await safeRollback(client);
-      throw error;
-    } finally {
-      client.release();
     }
+    return stats;
   }
 
   private async fetchPendingFacts(client: PoolClient): Promise<SyncFactRow[]> {
@@ -234,6 +312,60 @@ export class GraphSyncWorker {
     );
 
     return result.rows;
+  }
+
+  /**
+   * 获取已软删除但尚未在 Neo4j 中清理的 facts。
+   */
+  private async fetchDeletedFacts(client: PoolClient): Promise<DeleteSyncFactRow[]> {
+    const result = await client.query<DeleteSyncFactRow>(
+      `
+        SELECT
+          id,
+          entry_id,
+          subject_node_id,
+          subject_text,
+          normalized_fact_key
+        FROM memory_facts
+        WHERE neo4j_synced = FALSE
+          AND fact_state = 'deleted'
+          AND neo4j_retry_count < $2
+        ORDER BY updated_at ASC
+        LIMIT $1
+        FOR UPDATE SKIP LOCKED
+      `,
+      [this.batchSize, this.maxRetries]
+    );
+
+    return result.rows;
+  }
+
+  /**
+   * 从 Neo4j 中删除已删除 fact 对应的 RELATED_TO 边，并清理孤儿节点。
+   */
+  private async deleteFactFromNeo4j(fact: DeleteSyncFactRow): Promise<void> {
+    const syncKey = `${fact.entry_id}:${fact.normalized_fact_key}`;
+
+    await this.neo4j.runCypher(
+      `
+        MATCH (s)-[r:RELATED_TO {syncKey: $syncKey}]->(o)
+        DELETE r
+        WITH s, o
+        CALL {
+          WITH s
+          WITH s WHERE s.type = 'auto'
+            AND NOT EXISTS { (s)-[]-() }
+          DETACH DELETE s
+        }
+        CALL {
+          WITH o
+          WITH o WHERE o.type = 'auto'
+            AND NOT EXISTS { (o)-[]-() }
+          DETACH DELETE o
+        }
+      `,
+      { syncKey }
+    );
   }
 
   private async syncFactToNeo4j(fact: SyncFactRow): Promise<void> {

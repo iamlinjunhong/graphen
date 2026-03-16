@@ -8,6 +8,7 @@ export type PipelinePhase =
   | "resolving"
   | "embedding"
   | "saving"
+  | "memory"
   | "completed"
   | "error";
 

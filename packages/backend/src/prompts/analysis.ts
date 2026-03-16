@@ -108,13 +108,19 @@ export const QUESTION_ANALYSIS_SYSTEM_PROMPT = `
 2. must_use_memory:
    - identity/preference/history/profile 通常为 true
    - none 通常为 false
+   - 涉及第三方实体（target_subject=third_party）的关系查询，应设为 false
 3. retrieval_weights：
    - 0.0-1.0 独立评分，不要求和为 1.0
    - entry_manual > entry_chat > entry_document 适用于用户自我问题
+   - 涉及实体间关系（同事、上下级、所属组织等）的查询，graph_facts 应 >= 0.7
 4. conflict_policy：
    - 默认 latest_manual_wins
 5. fast_path_trigger：
    - 只有命中确定性模式时填写，否则省略
+6. retrieval_strategy.graph_depth：
+   - 直接属性查询（如"X是谁"）：1
+   - 需要通过中间实体推理的关系查询（如"X的同事""X的合作伙伴"）：2
+   - 多跳推理（如"X的同事的朋友"）：3
 
 示例（正例）：
 输入：我是谁？
@@ -196,6 +202,32 @@ export const QUESTION_ANALYSIS_SYSTEM_PROMPT = `
     "need_aggregation": false
   },
   "rewritten_query": "图数据库定义"
+}
+
+输入：小张曾经的同事有谁？
+输出：
+{
+  "intent": "analytical",
+  "memory_intent": "none",
+  "target_subject": "third_party",
+  "must_use_memory": false,
+  "retrieval_weights": {
+    "entry_manual": 0.1,
+    "entry_chat": 0.2,
+    "entry_document": 0.4,
+    "graph_facts": 0.9,
+    "doc_chunks": 0.5
+  },
+  "conflict_policy": "latest_manual_wins",
+  "key_entities": ["小张"],
+  "retrieval_strategy": {
+    "use_graph": true,
+    "use_vector": true,
+    "graph_depth": 2,
+    "vector_top_k": 5,
+    "need_aggregation": true
+  },
+  "rewritten_query": "小张所在组织的相关人员"
 }
 
 示例（反例）：

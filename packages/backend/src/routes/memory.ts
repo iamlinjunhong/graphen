@@ -23,8 +23,11 @@ import {
   buildMemoryExtractionUserPrompt,
   MEMORY_EXTRACTION_SYSTEM_PROMPT
 } from "../prompts/memoryPrompt.js";
-import { getLLMServiceSingleton } from "../runtime/graphRuntime.js";
+import { getLLMServiceSingleton, getNeo4jSyncTarget } from "../runtime/graphRuntime.js";
 import { getPgPoolSingleton } from "../runtime/PgPool.js";
+import { graphSyncEnabled } from "../runtime/runtimeMode.js";
+import { syncFactsToNeo4jInline, deleteFactsFromNeo4jInline } from "../utils/syncFactsToNeo4j.js";
+import type { DeleteFactInfo } from "../utils/syncFactsToNeo4j.js";
 import { getPgMemoryEntryStoreSingleton } from "../runtime/memoryRuntime.js";
 import { applyMemoryFollowupSchema } from "../runtime/pgMemorySchema.js";
 import { MemoryService } from "../services/MemoryService.js";
@@ -387,17 +390,32 @@ export function createMemoryRouter(options: CreateMemoryRouterOptions = {}): Rou
         }
 
         if (upsertedFacts.length > 0) {
-          await persistEntryFactsEvidence(pgPool, upsertedFacts, {
-            sourceType: entry.sourceType,
-            excerpt: body.content
-          });
+          // PG 后续操作（evidence + 冲突检测）与 Neo4j 写入并行执行
+          const pgFollowupPromise = (async () => {
+            await persistEntryFactsEvidence(pgPool, upsertedFacts, {
+              sourceType: entry.sourceType,
+              excerpt: body.content
+            });
 
-          // Write-time conflict detection for the entry creation path
-          try {
-            await detectAndResolveFactConflicts(pgPool, entry.id, upsertedFacts);
-          } catch (conflictErr) {
-            logger.warn({ err: conflictErr }, "Write-time conflict detection failed (non-fatal)");
-          }
+            try {
+              await detectAndResolveFactConflicts(pgPool, entry.id, upsertedFacts);
+            } catch (conflictErr) {
+              logger.warn({ err: conflictErr }, "Write-time conflict detection failed (non-fatal)");
+            }
+          })();
+
+          const neo4jSyncPromise = (async () => {
+            if (!graphSyncEnabled()) return;
+            const neo4jTarget = getNeo4jSyncTarget();
+            if (!neo4jTarget) return;
+            try {
+              await syncFactsToNeo4jInline(neo4jTarget, upsertedFacts, pgPool);
+            } catch (err) {
+              logger.warn({ err }, "Inline Neo4j sync failed (GraphSyncWorker will retry)");
+            }
+          })();
+
+          await Promise.all([pgFollowupPromise, neo4jSyncPromise]);
         }
 
         const detail = await service.getEntryWithFacts(entry.id);
@@ -506,17 +524,32 @@ export function createMemoryRouter(options: CreateMemoryRouterOptions = {}): Rou
         }
 
         if (upsertedFacts.length > 0) {
-          await persistEntryFactsEvidence(pgPool, upsertedFacts, {
-            sourceType: updated.sourceType,
-            excerpt: body.content
-          });
+          // PG 后续操作（evidence + 冲突检测）与 Neo4j 写入并行执行
+          const pgFollowupPromise = (async () => {
+            await persistEntryFactsEvidence(pgPool, upsertedFacts, {
+              sourceType: updated.sourceType,
+              excerpt: body.content
+            });
 
-          // Write-time conflict detection for the entry update path
-          try {
-            await detectAndResolveFactConflicts(pgPool, entryId, upsertedFacts);
-          } catch (conflictErr) {
-            logger.warn({ err: conflictErr }, "Write-time conflict detection failed (non-fatal)");
-          }
+            try {
+              await detectAndResolveFactConflicts(pgPool, entryId, upsertedFacts);
+            } catch (conflictErr) {
+              logger.warn({ err: conflictErr }, "Write-time conflict detection failed (non-fatal)");
+            }
+          })();
+
+          const neo4jSyncPromise = (async () => {
+            if (!graphSyncEnabled()) return;
+            const neo4jTarget = getNeo4jSyncTarget();
+            if (!neo4jTarget) return;
+            try {
+              await syncFactsToNeo4jInline(neo4jTarget, upsertedFacts, pgPool);
+            } catch (err) {
+              logger.warn({ err }, "Inline Neo4j sync failed (GraphSyncWorker will retry)");
+            }
+          })();
+
+          await Promise.all([pgFollowupPromise, neo4jSyncPromise]);
         }
 
         const detail = await service.getEntryWithFacts(entryId);
@@ -565,9 +598,23 @@ export function createMemoryRouter(options: CreateMemoryRouterOptions = {}): Rou
           case "resume":
             affected = await entryStore.updateEntryState(ids, "active", "entries-batch");
             break;
-          case "delete":
+          case "delete": {
+            // 先查出即将删除的 entries 关联的 active facts
+            const factsSnapshot = await queryActiveFactsForEntries(pgPool, ids);
             affected = await entryStore.deleteEntries(ids);
+            // 内联清理 Neo4j
+            if (factsSnapshot.length > 0 && graphSyncEnabled()) {
+              const neo4jTarget = getNeo4jSyncTarget();
+              if (neo4jTarget) {
+                try {
+                  await deleteFactsFromNeo4jInline(neo4jTarget, factsSnapshot, pgPool);
+                } catch (err) {
+                  logger.warn({ err }, "Inline Neo4j delete after batch entry delete failed (Worker will retry)");
+                }
+              }
+            }
             break;
+          }
           case "confirm":
           case "reject":
             affected = await applyEntryReviewBatch(
@@ -614,7 +661,23 @@ export function createMemoryRouter(options: CreateMemoryRouterOptions = {}): Rou
           return res.status(400).json({ error: "ids must not be empty" });
         }
 
+        // 先查出即将删除的 entries 关联的 active facts
+        const factsSnapshot = await queryActiveFactsForEntries(pgPool, ids);
+
         const affected = await entryStore.deleteEntries(ids);
+
+        // 内联清理 Neo4j 中的对应边和孤儿节点
+        if (factsSnapshot.length > 0 && graphSyncEnabled()) {
+          const neo4jTarget = getNeo4jSyncTarget();
+          if (neo4jTarget) {
+            try {
+              await deleteFactsFromNeo4jInline(neo4jTarget, factsSnapshot, pgPool);
+            } catch (err) {
+              logger.warn({ err }, "Inline Neo4j delete after entry delete failed (Worker will retry)");
+            }
+          }
+        }
+
         return res.json({ affected });
       } catch (error) {
         return handleMemoryRouteError(res, error, "Failed to delete memory entries");
@@ -1104,14 +1167,29 @@ export function createMemoryRouter(options: CreateMemoryRouterOptions = {}): Rou
         }
 
         const result = await entryStore.upsertFacts(entry.id, [input]);
-        await maybeEnqueueEntryRewriteJob(pgPool, entry.id, "fact_create");
 
-        // Write-time conflict detection for the fact creation path
-        try {
-          await detectAndResolveFactConflicts(pgPool, entry.id, result.facts);
-        } catch (conflictErr) {
-          logger.warn({ err: conflictErr }, "Write-time conflict detection failed (non-fatal)");
-        }
+        // rewrite job + 冲突检测与 Neo4j 内联同步并行执行
+        const pgFollowupPromise = (async () => {
+          await maybeEnqueueEntryRewriteJob(pgPool, entry.id, "fact_create");
+          try {
+            await detectAndResolveFactConflicts(pgPool, entry.id, result.facts);
+          } catch (conflictErr) {
+            logger.warn({ err: conflictErr }, "Write-time conflict detection failed (non-fatal)");
+          }
+        })();
+
+        const neo4jSyncPromise = (async () => {
+          if (!graphSyncEnabled()) return;
+          const neo4jTarget = getNeo4jSyncTarget();
+          if (!neo4jTarget) return;
+          try {
+            await syncFactsToNeo4jInline(neo4jTarget, result.facts, pgPool);
+          } catch (err) {
+            logger.warn({ err }, "Inline Neo4j sync failed (GraphSyncWorker will retry)");
+          }
+        })();
+
+        await Promise.all([pgFollowupPromise, neo4jSyncPromise]);
 
         const createdFact = result.facts[0];
         if (!createdFact) {
@@ -1216,6 +1294,63 @@ export function createMemoryRouter(options: CreateMemoryRouterOptions = {}): Rou
         );
         await maybeEnqueueEntryRewriteJob(pgPool, existing.entry_id, "fact_update");
 
+        // 内联同步更新到 Neo4j（更新 = 重新 MERGE，会覆盖旧值）
+        if (graphSyncEnabled()) {
+          const neo4jTarget = getNeo4jSyncTarget();
+          if (neo4jTarget) {
+            try {
+              const syncRow = await pgPool.query<{
+                id: string;
+                entry_id: string;
+                subject_node_id: string | null;
+                subject_text: string;
+                predicate: string;
+                object_node_id: string | null;
+                object_text: string | null;
+                value_type: FactValueType;
+                normalized_fact_key: string;
+                confidence: number;
+                fact_state: "active" | "deleted";
+                created_at: string;
+                updated_at: string;
+              }>(
+                `
+                  SELECT id, entry_id, subject_node_id, subject_text, predicate,
+                         object_node_id, object_text, value_type, normalized_fact_key,
+                         confidence, fact_state, created_at, updated_at
+                  FROM memory_facts
+                  WHERE id = $1::uuid
+                  LIMIT 1
+                `,
+                [id]
+              );
+              const row = syncRow.rows[0];
+              if (row) {
+                const syncFact: import("@graphen/shared").MemoryEntryFact = {
+                  id: row.id,
+                  entryId: row.entry_id,
+                  subjectText: row.subject_text,
+                  predicate: row.predicate,
+                  valueType: row.value_type,
+                  normalizedFactKey: row.normalized_fact_key,
+                  confidence: row.confidence,
+                  factState: row.fact_state,
+                  createdAt: row.created_at,
+                  updatedAt: row.updated_at,
+                  neo4jSynced: false,
+                  neo4jRetryCount: 0,
+                  ...(row.subject_node_id ? { subjectNodeId: row.subject_node_id } : {}),
+                  ...(row.object_node_id ? { objectNodeId: row.object_node_id } : {}),
+                  ...(row.object_text ? { objectText: row.object_text } : {})
+                };
+                await syncFactsToNeo4jInline(neo4jTarget, [syncFact], pgPool);
+              }
+            } catch (err) {
+              logger.warn({ err, factId: id }, "Inline Neo4j sync after fact update failed (Worker will retry)");
+            }
+          }
+        }
+
         const updated = await fetchCompatFactById(pgPool, id);
         if (!updated) {
           return res.status(404).json({ error: "Fact not found" });
@@ -1282,7 +1417,31 @@ export function createMemoryRouter(options: CreateMemoryRouterOptions = {}): Rou
     async (req, res) => {
       try {
         const { id } = req.params as z.infer<typeof factIdParamsSchema>;
-        const result = await pgPool.query<{ entry_id: string }>(
+
+        // 先查出 fact 的同步信息，用于后续 Neo4j 清理
+        const factInfoResult = await pgPool.query<{
+          id: string;
+          entry_id: string;
+          subject_node_id: string | null;
+          subject_text: string;
+          normalized_fact_key: string;
+        }>(
+          `
+            SELECT id, entry_id, subject_node_id, subject_text, normalized_fact_key
+            FROM memory_facts
+            WHERE id = $1::uuid
+              AND deleted_at IS NULL
+            LIMIT 1
+          `,
+          [id]
+        );
+        const factInfo = factInfoResult.rows[0];
+        if (!factInfo) {
+          return res.status(404).json({ error: "Fact not found" });
+        }
+
+        // 软删除 fact
+        await pgPool.query(
           `
             UPDATE memory_facts
             SET fact_state = 'deleted',
@@ -1292,14 +1451,9 @@ export function createMemoryRouter(options: CreateMemoryRouterOptions = {}): Rou
                 neo4j_synced_at = NULL
             WHERE id = $1::uuid
               AND deleted_at IS NULL
-            RETURNING entry_id
           `,
           [id]
         );
-        const entryId = result.rows[0]?.entry_id;
-        if (!entryId) {
-          return res.status(404).json({ error: "Fact not found" });
-        }
 
         await pgPool.query(
           `
@@ -1309,9 +1463,27 @@ export function createMemoryRouter(options: CreateMemoryRouterOptions = {}): Rou
             WHERE id = $1::uuid
               AND deleted_at IS NULL
           `,
-          [entryId]
+          [factInfo.entry_id]
         );
-        await maybeEnqueueEntryRewriteJob(pgPool, entryId, "fact_delete");
+        await maybeEnqueueEntryRewriteJob(pgPool, factInfo.entry_id, "fact_delete");
+
+        // 内联同步：从 Neo4j 中删除对应的边和孤儿节点
+        if (graphSyncEnabled()) {
+          const neo4jTarget = getNeo4jSyncTarget();
+          if (neo4jTarget) {
+            try {
+              await deleteFactsFromNeo4jInline(neo4jTarget, [{
+                id: factInfo.id,
+                entryId: factInfo.entry_id,
+                subjectNodeId: factInfo.subject_node_id,
+                subjectText: factInfo.subject_text,
+                normalizedFactKey: factInfo.normalized_fact_key
+              }], pgPool);
+            } catch (err) {
+              logger.warn({ err, factId: id }, "Inline Neo4j delete failed (Worker will retry)");
+            }
+          }
+        }
 
         return res.status(204).send();
       } catch (error) {
@@ -1782,6 +1954,24 @@ function clampConfidence(value: number): number {
 }
 
 async function markEntryFactsDeleted(pgPool: Pool, entryId: string): Promise<void> {
+  // 先查出即将删除的 facts 的同步信息
+  const factsInfoResult = await pgPool.query<{
+    id: string;
+    entry_id: string;
+    subject_node_id: string | null;
+    subject_text: string;
+    normalized_fact_key: string;
+  }>(
+    `
+      SELECT id, entry_id, subject_node_id, subject_text, normalized_fact_key
+      FROM memory_facts
+      WHERE entry_id = $1::uuid
+        AND deleted_at IS NULL
+    `,
+    [entryId]
+  );
+
+  // 软删除 facts
   await pgPool.query(
     `
       UPDATE memory_facts
@@ -1795,6 +1985,60 @@ async function markEntryFactsDeleted(pgPool: Pool, entryId: string): Promise<voi
     `,
     [entryId]
   );
+
+  // 内联同步：从 Neo4j 中删除对应的边和孤儿节点
+  if (factsInfoResult.rows.length > 0 && graphSyncEnabled()) {
+    const neo4jTarget = getNeo4jSyncTarget();
+    if (neo4jTarget) {
+      const deleteInfos: DeleteFactInfo[] = factsInfoResult.rows.map((row) => ({
+        id: row.id,
+        entryId: row.entry_id,
+        subjectNodeId: row.subject_node_id,
+        subjectText: row.subject_text,
+        normalizedFactKey: row.normalized_fact_key
+      }));
+      try {
+        await deleteFactsFromNeo4jInline(neo4jTarget, deleteInfos, pgPool);
+      } catch (err) {
+        logger.warn({ err, entryId }, "Inline Neo4j delete for entry facts failed (Worker will retry)");
+      }
+    }
+  }
+}
+
+/**
+ * 查询指定 entry IDs 关联的所有 active facts 的同步信息。
+ * 用于在 entry 删除前快照 facts 信息，以便后续清理 Neo4j。
+ */
+async function queryActiveFactsForEntries(pgPool: Pool, entryIds: string[]): Promise<DeleteFactInfo[]> {
+  if (entryIds.length === 0) {
+    return [];
+  }
+
+  const result = await pgPool.query<{
+    id: string;
+    entry_id: string;
+    subject_node_id: string | null;
+    subject_text: string;
+    normalized_fact_key: string;
+  }>(
+    `
+      SELECT id, entry_id, subject_node_id, subject_text, normalized_fact_key
+      FROM memory_facts
+      WHERE entry_id = ANY($1::uuid[])
+        AND deleted_at IS NULL
+        AND fact_state = 'active'
+    `,
+    [entryIds]
+  );
+
+  return result.rows.map((row) => ({
+    id: row.id,
+    entryId: row.entry_id,
+    subjectNodeId: row.subject_node_id,
+    subjectText: row.subject_text,
+    normalizedFactKey: row.normalized_fact_key
+  }));
 }
 
 async function applyEntryReviewBatch(

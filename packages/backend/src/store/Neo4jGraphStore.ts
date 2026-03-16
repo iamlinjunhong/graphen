@@ -15,6 +15,7 @@ import type {
   SubgraphQuery
 } from "@graphen/shared";
 import { appConfig } from "../config.js";
+import { logger } from "../utils/logger.js";
 
 export interface Neo4jGraphStoreConfig {
   uri: string;
@@ -98,6 +99,7 @@ export class Neo4jGraphStore implements AbstractGraphStore {
           MERGE (e:Entity {id: node.id})
           ON CREATE SET
             e.name = node.name,
+            e.nameLower = node.nameLower,
             e.type = node.type,
             e.description = node.description,
             e.properties = node.properties,
@@ -109,6 +111,7 @@ export class Neo4jGraphStore implements AbstractGraphStore {
             e.updatedAt = node.updatedAt
           ON MATCH SET
             e.name = node.name,
+            e.nameLower = node.nameLower,
             e.type = node.type,
             e.description = CASE
               WHEN size(node.description) > size(coalesce(e.description, ''))
@@ -283,7 +286,7 @@ export class Neo4jGraphStore implements AbstractGraphStore {
             r.description = edge.description,
             r.properties = edge.properties,
             r.weight = edge.weight,
-            r.sourceDocumentIds = edge.sourceDocumentIds,
+            r.sourceDocumentIds = REDUCE(acc = [], x IN (coalesce(r.sourceDocumentIds, []) + coalesce(edge.sourceDocumentIds, [])) | CASE WHEN x IN acc THEN acc ELSE acc + x END),
             r.confidence = edge.confidence,
             r.createdAt = coalesce(r.createdAt, edge.createdAt)
           `,
@@ -327,10 +330,12 @@ export class Neo4jGraphStore implements AbstractGraphStore {
    */
   async removeDocumentData(docId: string): Promise<void> {
     await this.withSession("WRITE", async (session) => {
-      // Delete edges exclusively sourced by this document
+      // Step 1: Delete edges exclusively sourced by this document,
+      // or remove this docId from shared edges.
+      // Use directed match to avoid processing each edge twice.
       await session.run(
         `
-        MATCH ()-[r:RELATED_TO]-()
+        MATCH ()-[r:RELATED_TO]->()
         WHERE $docId IN r.sourceDocumentIds
         WITH r, [x IN r.sourceDocumentIds WHERE x <> $docId] AS remaining
         FOREACH (_ IN CASE WHEN size(remaining) = 0 THEN [1] ELSE [] END | DELETE r)
@@ -339,14 +344,41 @@ export class Neo4jGraphStore implements AbstractGraphStore {
         { docId }
       );
 
-      // Delete nodes exclusively sourced by this document
+      // Step 2: For nodes exclusively sourced by this document, only delete
+      // if they have no remaining relationships (avoid DETACH DELETE which
+      // would cascade-remove edges contributed by other documents).
+      // First, remove docId from shared nodes.
       await session.run(
         `
         MATCH (e:Entity)
         WHERE $docId IN e.sourceDocumentIds
         WITH e, [x IN e.sourceDocumentIds WHERE x <> $docId] AS remaining
-        FOREACH (_ IN CASE WHEN size(remaining) = 0 THEN [1] ELSE [] END | DETACH DELETE e)
-        FOREACH (_ IN CASE WHEN size(remaining) > 0 THEN [1] ELSE [] END | SET e.sourceDocumentIds = remaining)
+        WHERE size(remaining) > 0
+        SET e.sourceDocumentIds = remaining
+        `,
+        { docId }
+      );
+
+      // Step 3: Delete orphan nodes that were exclusively sourced by this
+      // document and have no remaining relationships.
+      await session.run(
+        `
+        MATCH (e:Entity)
+        WHERE $docId IN e.sourceDocumentIds
+          AND size([x IN e.sourceDocumentIds WHERE x <> $docId]) = 0
+          AND NOT EXISTS { (e)-[]-() }
+        DELETE e
+        `,
+        { docId }
+      );
+
+      // Step 4: Any remaining nodes still referencing this docId — just
+      // strip the docId (node stays alive because it has edges from other docs).
+      await session.run(
+        `
+        MATCH (e:Entity)
+        WHERE $docId IN e.sourceDocumentIds
+        SET e.sourceDocumentIds = [x IN e.sourceDocumentIds WHERE x <> $docId]
         `,
         { docId }
       );
@@ -398,117 +430,225 @@ export class Neo4jGraphStore implements AbstractGraphStore {
   }
 
   async getSubgraph(query: SubgraphQuery): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
-      const safeMaxDepth = Math.max(1, query.maxDepth ?? 2);
-      const safeMaxNodes = Math.max(1, query.maxNodes ?? 200);
+        const safeMaxDepth = Math.max(1, query.maxDepth ?? 2);
+        const safeMaxNodes = Math.max(1, query.maxNodes ?? 200);
 
-      return this.withSession("READ", async (session) => {
-        // Build dynamic WHERE clauses for node filtering (T7)
-        const nodeWhereClauses: string[] = [];
-        const params: Record<string, unknown> = {
-          candidateLimit: neo4j.int(safeMaxNodes * 3)
-        };
+        return this.withSession("READ", async (session) => {
+          // Build dynamic WHERE clauses for node filtering (T7)
+          const nodeFilterClauses: string[] = [];
+          const sharedParams: Record<string, unknown> = {};
 
-        if (query.nodeTypes && query.nodeTypes.length > 0) {
-          nodeWhereClauses.push("node.type IN $nodeTypes");
-          params.nodeTypes = query.nodeTypes;
-        }
-        if (query.documentIds && query.documentIds.length > 0) {
-          nodeWhereClauses.push(
-            "any(docId IN node.sourceDocumentIds WHERE docId IN $documentIds)"
-          );
-          params.documentIds = query.documentIds;
-        }
-        if (query.minConfidence !== undefined) {
-          nodeWhereClauses.push("node.confidence >= $minConfidence");
-          params.minConfidence = query.minConfidence;
-        }
+          if (query.nodeTypes && query.nodeTypes.length > 0) {
+            nodeFilterClauses.push("n.type IN $nodeTypes");
+            sharedParams.nodeTypes = query.nodeTypes;
+          }
+          if (query.documentIds && query.documentIds.length > 0) {
+            nodeFilterClauses.push(
+              "any(docId IN n.sourceDocumentIds WHERE docId IN $documentIds)"
+            );
+            sharedParams.documentIds = query.documentIds;
+          }
+          if (query.minConfidence !== undefined) {
+            nodeFilterClauses.push("n.confidence >= $minConfidence");
+            sharedParams.minConfidence = query.minConfidence;
+          }
 
-        const nodeWhereStr =
-          nodeWhereClauses.length > 0 ? `WHERE ${nodeWhereClauses.join(" AND ")}` : "";
+          const nodeFilterStr =
+            nodeFilterClauses.length > 0 ? `AND ${nodeFilterClauses.join(" AND ")}` : "";
 
-        let candidateNodes: GraphNode[];
+          let candidateNodes: GraphNode[];
 
-        if (query.centerNodeIds && query.centerNodeIds.length > 0) {
-          params.centerNodeIds = query.centerNodeIds;
-          // Neo4j does not support parameterized variable-length path ranges,
-          // so we inline the depth value directly into the Cypher string.
-          const cypher = `
-            MATCH (seed:Entity)
-            WHERE seed.id IN $centerNodeIds
-            OPTIONAL MATCH path = (seed)-[:RELATED_TO*0..${safeMaxDepth}]-(node:Entity)
-            WITH collect(DISTINCT node)[0..$candidateLimit] AS nodes
-            UNWIND nodes AS node
-            WITH node WHERE node IS NOT NULL
-            ${nodeWhereStr ? `AND ${nodeWhereClauses.join(" AND ")}` : ""}
-            WITH node
-            OPTIONAL MATCH (node)-[deg:RELATED_TO]-()
-            WITH node, count(deg) AS degree
-            ORDER BY degree DESC
-            RETURN DISTINCT node
+          if (query.centerNodeIds && query.centerNodeIds.length > 0) {
+            // Use iterative BFS expansion for reliable multi-hop traversal.
+            // The previous OPTIONAL MATCH with variable-length paths could miss
+            // multi-hop neighbors in certain Neo4j query plan scenarios.
+            candidateNodes = await this.bfsExpandNodes(
+              session,
+              query.centerNodeIds,
+              safeMaxDepth,
+              safeMaxNodes,
+              nodeFilterStr,
+              sharedParams
+            );
+            logger.info(
+              {
+                centerNodeIds: query.centerNodeIds,
+                safeMaxDepth,
+                candidateNodeCount: candidateNodes.length,
+                candidateNodeNames: candidateNodes.map((n) => n.name).slice(0, 20)
+              },
+              "Neo4j getSubgraph: candidate nodes found (BFS)"
+            );
+          } else {
+            const nodeWhereStr =
+              nodeFilterClauses.length > 0
+                ? `WHERE ${nodeFilterClauses.map((c) => c.replace(/\bn\./g, "node.")).join(" AND ")}`
+                : "";
+            const cypher = `
+              MATCH (node:Entity)
+              ${nodeWhereStr}
+              WITH node
+              OPTIONAL MATCH (node)-[deg:RELATED_TO]-()
+              WITH node, count(deg) AS degree
+              ORDER BY degree DESC
+              LIMIT $candidateLimit
+              RETURN node
+            `;
+            const result = await session.run(cypher, {
+              ...sharedParams,
+              candidateLimit: neo4j.int(safeMaxNodes * 3)
+            });
+            candidateNodes = result.records.map((record) =>
+              this.mapGraphNode(record.get("node") as Node)
+            );
+          }
+
+          const nodes = candidateNodes.slice(0, safeMaxNodes);
+
+          if (nodes.length === 0) {
+            return { nodes: [], edges: [] };
+          }
+
+          // Build edge query with Cypher-level filtering (T7)
+          const nodeIds = nodes.map((node) => node.id);
+          const edgeWhereClauses: string[] = [
+            "source.id IN $nodeIds",
+            "target.id IN $nodeIds"
+          ];
+          const edgeParams: Record<string, unknown> = { nodeIds };
+
+          if (query.relationTypes && query.relationTypes.length > 0) {
+            edgeWhereClauses.push("r.relationType IN $relationTypes");
+            edgeParams.relationTypes = query.relationTypes;
+          }
+          if (query.documentIds && query.documentIds.length > 0) {
+            edgeWhereClauses.push(
+              "any(docId IN r.sourceDocumentIds WHERE docId IN $edgeDocumentIds)"
+            );
+            edgeParams.edgeDocumentIds = query.documentIds;
+          }
+          if (query.minConfidence !== undefined) {
+            edgeWhereClauses.push("r.confidence >= $edgeMinConfidence");
+            edgeParams.edgeMinConfidence = query.minConfidence;
+          }
+
+          const edgeCypher = `
+            MATCH (source:Entity)-[r:RELATED_TO]->(target:Entity)
+            WHERE ${edgeWhereClauses.join(" AND ")}
+            RETURN DISTINCT r
           `;
-          const result = await session.run(cypher, params);
-          candidateNodes = result.records.map((record) =>
-            this.mapGraphNode(record.get("node") as Node)
+          const edgeResult = await session.run(edgeCypher, edgeParams);
+          const edges = edgeResult.records.map((record) =>
+            this.mapGraphEdge(record.get("r") as Relationship)
           );
-        } else {
-          const cypher = `
-            MATCH (node:Entity)
-            ${nodeWhereStr}
-            WITH node
-            OPTIONAL MATCH (node)-[deg:RELATED_TO]-()
-            WITH node, count(deg) AS degree
-            ORDER BY degree DESC
-            LIMIT $candidateLimit
-            RETURN node
-          `;
-          const result = await session.run(cypher, params);
-          candidateNodes = result.records.map((record) =>
-            this.mapGraphNode(record.get("node") as Node)
-          );
-        }
 
-        const nodes = candidateNodes.slice(0, safeMaxNodes);
+          return { nodes, edges };
+        });
+      }
 
-        if (nodes.length === 0) {
-          return { nodes: [], edges: [] };
-        }
+  /**
+   * Iterative BFS expansion from seed nodes.
+   * Each hop is a separate Cypher query that finds direct neighbors of the
+   * current frontier, guaranteeing that multi-hop nodes are discovered
+   * regardless of Neo4j query planner behavior with variable-length paths.
+   */
+  private async bfsExpandNodes(
+    session: Session,
+    seedIds: string[],
+    maxDepth: number,
+    maxNodes: number,
+    nodeFilterStr: string,
+    filterParams: Record<string, unknown>
+  ): Promise<GraphNode[]> {
+    const visitedIds = new Set<string>();
+    const allNodes: GraphNode[] = [];
 
-        // Build edge query with Cypher-level filtering (T7)
-        const nodeIds = nodes.map((node) => node.id);
-        const edgeWhereClauses: string[] = [
-          "source.id IN $nodeIds",
-          "target.id IN $nodeIds"
-        ];
-        const edgeParams: Record<string, unknown> = { nodeIds };
-
-        if (query.relationTypes && query.relationTypes.length > 0) {
-          edgeWhereClauses.push("r.relationType IN $relationTypes");
-          edgeParams.relationTypes = query.relationTypes;
-        }
-        if (query.documentIds && query.documentIds.length > 0) {
-          edgeWhereClauses.push(
-            "any(docId IN r.sourceDocumentIds WHERE docId IN $edgeDocumentIds)"
-          );
-          edgeParams.edgeDocumentIds = query.documentIds;
-        }
-        if (query.minConfidence !== undefined) {
-          edgeWhereClauses.push("r.confidence >= $edgeMinConfidence");
-          edgeParams.edgeMinConfidence = query.minConfidence;
-        }
-
-        const edgeCypher = `
-          MATCH (source:Entity)-[r:RELATED_TO]->(target:Entity)
-          WHERE ${edgeWhereClauses.join(" AND ")}
-          RETURN DISTINCT r
-        `;
-        const edgeResult = await session.run(edgeCypher, edgeParams);
-        const edges = edgeResult.records.map((record) =>
-          this.mapGraphEdge(record.get("r") as Relationship)
-        );
-
-        return { nodes, edges };
-      });
+    // Step 0: fetch seed nodes themselves
+    const seedResult = await session.run(
+      `MATCH (n:Entity) WHERE n.id IN $ids RETURN n`,
+      { ids: seedIds }
+    );
+    const seedNodes = seedResult.records.map((r) => this.mapGraphNode(r.get("n") as Node));
+    for (const node of seedNodes) {
+      if (!visitedIds.has(node.id)) {
+        visitedIds.add(node.id);
+        allNodes.push(node);
+      }
     }
+
+    logger.info(
+      { seedCount: seedNodes.length, seedNames: seedNodes.map((n) => n.name) },
+      "Neo4j BFS: seeds loaded"
+    );
+
+    // Frontier = IDs to expand from in the current hop
+    let frontier = seedNodes.map((n) => n.id);
+
+    for (let hop = 1; hop <= maxDepth; hop++) {
+      if (frontier.length === 0 || allNodes.length >= maxNodes * 3) break;
+
+      // Find all direct neighbors (both directions) of the frontier nodes
+      // that haven't been visited yet.
+      const hopCypher = `
+        MATCH (src:Entity)-[:RELATED_TO]-(n:Entity)
+        WHERE src.id IN $frontierIds AND NOT n.id IN $visitedIds
+        ${nodeFilterStr}
+        RETURN DISTINCT n
+      `;
+      const hopResult = await session.run(hopCypher, {
+        ...filterParams,
+        frontierIds: frontier,
+        visitedIds: [...visitedIds]
+      });
+
+      const newNodes = hopResult.records.map((r) => this.mapGraphNode(r.get("n") as Node));
+      const newFrontier: string[] = [];
+
+      for (const node of newNodes) {
+        if (!visitedIds.has(node.id)) {
+          visitedIds.add(node.id);
+          allNodes.push(node);
+          newFrontier.push(node.id);
+        }
+      }
+
+      logger.info(
+        {
+          hop,
+          frontierSize: frontier.length,
+          newNodesFound: newFrontier.length,
+          newNodeNames: newNodes.map((n) => n.name).slice(0, 20),
+          totalNodes: allNodes.length
+        },
+        "Neo4j BFS: hop completed"
+      );
+
+      frontier = newFrontier;
+    }
+
+    // Sort by degree (most connected first) for consistent prioritization
+    if (allNodes.length > 0) {
+      const degreeResult = await session.run(
+        `
+        UNWIND $nodeIds AS nid
+        MATCH (n:Entity {id: nid})
+        OPTIONAL MATCH (n)-[deg:RELATED_TO]-()
+        RETURN n.id AS id, count(deg) AS degree
+        `,
+        { nodeIds: allNodes.map((n) => n.id) }
+      );
+      const degreeMap = new Map<string, number>();
+      for (const record of degreeResult.records) {
+        degreeMap.set(
+          this.toString(record.get("id"), ""),
+          this.toNumber(record.get("degree"))
+        );
+      }
+      allNodes.sort((a, b) => (degreeMap.get(b.id) ?? 0) - (degreeMap.get(a.id) ?? 0));
+    }
+
+    return allNodes;
+  }
 
   async getStats(): Promise<GraphStats> {
       // T8: Return cached stats if still valid
@@ -630,6 +770,11 @@ export class Neo4jGraphStore implements AbstractGraphStore {
         );
         await session.run(
           `CREATE INDEX entity_confidence_idx IF NOT EXISTS FOR (e:Entity) ON (e.confidence)`
+        );
+
+        // Index on lower-cased name for syncSingleFact OPTIONAL MATCH lookups
+        await session.run(
+          `CREATE INDEX entity_name_lower_idx IF NOT EXISTS FOR (e:Entity) ON (e.nameLower)`
         );
       });
     }
@@ -775,6 +920,7 @@ export class Neo4jGraphStore implements AbstractGraphStore {
     return {
       id: node.id,
       name: node.name,
+      nameLower: node.name.trim().toLowerCase().replace(/\s+/g, " "),
       type: node.type,
       description: node.description,
       properties: JSON.stringify(node.properties ?? {}),

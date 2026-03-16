@@ -545,7 +545,7 @@ export const apiClient = {
     async getNeighbors(
       id: string,
       params?: { depth?: number; maxNodes?: number; signal?: AbortSignal }
-    ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; documentNames?: Record<string, string> }> {
+    ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; documentNames?: Record<string, string> | undefined }> {
       const result = await request<GraphSubgraphResponse>(`/graph/nodes/${id}/neighbors`, {
         query: {
           depth: params?.depth,
@@ -569,7 +569,7 @@ export const apiClient = {
       maxDepth?: number;
       maxNodes?: number;
       signal?: AbortSignal;
-    }): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; documentNames?: Record<string, string> }> {
+    }): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; documentNames?: Record<string, string> | undefined }> {
       const result = await request<GraphSubgraphResponse>("/graph/subgraph", {
         query: {
           centerNodeIds: params?.centerNodeIds,

@@ -137,7 +137,9 @@ export function ChatMessages({
                       <span className="chat-cursor">|</span>
                     </>
                   ) : (
-                    <p>思考中...</p>
+                    <span className="chat-thinking-indicator">
+                      <span className="chat-thinking-text">思考中...</span>
+                    </span>
                   )}
                 </div>
               </div>

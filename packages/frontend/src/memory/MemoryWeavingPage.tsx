@@ -4,7 +4,7 @@ import type { MemoryBatchAction } from "../services/api.js";
 import { EMPTY_ENTRY_FACTS, useMemoryStore } from "../stores/useMemoryStore";
 import { MemoryToolbar } from "./MemoryToolbar";
 import { MemoryPagination } from "./MemoryPagination";
-import { MemoryStatsPanel, type MemoryQuickSourceFilter } from "./MemoryStatsPanel";
+import type { MemoryQuickSourceFilter } from "./MemoryStatsPanel";
 import { MemoryTable } from "./MemoryTable";
 import type { MemoryRowAction } from "./MemoryTableRow";
 import { MemoryTableSkeleton } from "./MemoryTableSkeleton";
@@ -21,39 +21,23 @@ import "../styles/memory-weaving.css";
 const EMPTY_SOURCE_TYPES: MemorySourceType[] = [];
 
 function mapQuickFilterToSourceTypes(filter: MemoryQuickSourceFilter): MemorySourceType[] {
-  if (filter === "all") {
-    return EMPTY_SOURCE_TYPES;
-  }
-  if (filter === "document") {
-    return ["document"];
-  }
-  if (filter === "manual") {
-    return ["manual"];
-  }
+  if (filter === "all") return EMPTY_SOURCE_TYPES;
+  if (filter === "document") return ["document"];
+  if (filter === "manual") return ["manual"];
   return ["chat_user", "chat_assistant"];
 }
 
 function mapSourceTypesToQuickFilter(sourceTypes: MemorySourceType[]): MemoryQuickSourceFilter {
-  if (sourceTypes.length === 0) {
-    return "all";
-  }
-
+  if (sourceTypes.length === 0) return "all";
   const normalized = [...new Set(sourceTypes)].sort();
-  if (normalized.length === 1 && normalized[0] === "document") {
-    return "document";
-  }
-  if (normalized.length === 1 && normalized[0] === "manual") {
-    return "manual";
-  }
-  if (
-    normalized.length === 2
-    && normalized.includes("chat_user")
-    && normalized.includes("chat_assistant")
-  ) {
-    return "chat";
-  }
-
+  if (normalized.length === 1 && normalized[0] === "document") return "document";
+  if (normalized.length === 1 && normalized[0] === "manual") return "manual";
+  if (normalized.length === 2 && normalized.includes("chat_user") && normalized.includes("chat_assistant")) return "chat";
   return "all";
+}
+
+function getSourceCount(bySourceType: Partial<Record<MemorySourceType, number>>, type: MemorySourceType): number {
+  return bySourceType[type] ?? 0;
 }
 
 export function MemoryWeavingPage() {
@@ -119,9 +103,7 @@ export function MemoryWeavingPage() {
   }, [currentPage, fetchEntries, filters, pageSize, searchQuery, sortColumn, sortDirection]);
 
   useEffect(() => {
-    if (!expandedEntryId) {
-      return;
-    }
+    if (!expandedEntryId) return;
     void Promise.all([
       fetchEntryFacts(expandedEntryId),
       fetchAccessLogs(expandedEntryId),
@@ -135,10 +117,7 @@ export function MemoryWeavingPage() {
   );
 
   useEffect(() => {
-    if (!expandedEntryId || expandedEntryFacts.length === 0) {
-      return;
-    }
-
+    if (!expandedEntryId || expandedEntryFacts.length === 0) return;
     for (const fact of expandedEntryFacts) {
       if (evidenceByFactId[fact.id] === undefined) {
         void loadEvidence(fact.id);
@@ -147,27 +126,26 @@ export function MemoryWeavingPage() {
   }, [evidenceByFactId, expandedEntryFacts, expandedEntryId, loadEvidence]);
 
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
-
   const allVisibleSelected = entries.length > 0 && entries.every((entry) => selectedIdSet.has(entry.id));
   const someVisibleSelected = entries.some((entry) => selectedIdSet.has(entry.id)) && !allVisibleSelected;
 
+  // Stats derived values
+  const documentCount = getSourceCount(stats.bySourceType, "document");
+  const chatCount = getSourceCount(stats.bySourceType, "chat_user") + getSourceCount(stats.bySourceType, "chat_assistant");
+  const manualCount = getSourceCount(stats.bySourceType, "manual");
+  const confirmedCount = stats.byReviewStatus["confirmed"] ?? 0;
+  const conflictedCount = stats.byReviewStatus["conflicted"] ?? 0;
+
   const handleToggleSelected = (entryId: string, checked: boolean): void => {
     if (checked) {
-      if (!selectedIdSet.has(entryId)) {
-        setSelectedIds([...selectedIds, entryId]);
-      }
+      if (!selectedIdSet.has(entryId)) setSelectedIds([...selectedIds, entryId]);
       return;
     }
-    if (selectedIdSet.has(entryId)) {
-      setSelectedIds(selectedIds.filter((id) => id !== entryId));
-    }
+    if (selectedIdSet.has(entryId)) setSelectedIds(selectedIds.filter((id) => id !== entryId));
   };
 
   const handleToggleSelectAll = (checked: boolean): void => {
-    if (!checked) {
-      setSelectedIds([]);
-      return;
-    }
+    if (!checked) { setSelectedIds([]); return; }
     setSelectedIds(entries.map((entry) => entry.id));
   };
 
@@ -181,10 +159,9 @@ export function MemoryWeavingPage() {
       window.alert("目标记忆不在当前页，请调整筛选或翻页后重试。");
       return;
     }
-
     setExpandedEntryId(targetEntry.id);
     window.setTimeout(() => {
-      const row = document.querySelector(`[data-memory-entry-id=\"${targetEntry.id}\"]`);
+      const row = document.querySelector(`[data-memory-entry-id="${targetEntry.id}"]`);
       if (row instanceof HTMLElement) {
         row.scrollIntoView({ behavior: "smooth", block: "center" });
       }
@@ -195,47 +172,31 @@ export function MemoryWeavingPage() {
     void Promise.all([
       fetchEntries({ page: currentPage, pageSize, force: true }),
       fetchStats({ force: true }),
-      fetchCategories({ force: true })
+      fetchCategories({ force: true }),
     ]);
   };
 
   const handleBatchAction = async (action: MemoryBatchAction): Promise<void> => {
-    if (selectedIds.length === 0) {
-      return;
-    }
+    if (selectedIds.length === 0) return;
     await batchUpdateEntries(selectedIds, action);
   };
 
   const handleRowAction = async (entry: MemoryEntry, action: MemoryRowAction): Promise<void> => {
-    if (action === "edit") {
-      setEditingEntry(entry);
-      return;
-    }
-
+    if (action === "edit") { setEditingEntry(entry); return; }
     if (action === "delete") {
       const confirmed = window.confirm(`确认删除记忆 #${entry.id.slice(0, 8)} 吗？`);
-      if (!confirmed) {
-        return;
-      }
+      if (!confirmed) return;
     }
-
     const mappedAction: MemoryBatchAction = action === "unarchive" ? "resume" : action;
     await batchUpdateEntries([entry.id], mappedAction);
   };
 
   const handleSubmitEdit = async (content: string): Promise<void> => {
-    if (!editingEntry) {
-      return;
-    }
-
+    if (!editingEntry) return;
     setUpdatingEntry(true);
     try {
       const updatedEntryId = editingEntry.id;
-      const updated = await updateEntry(updatedEntryId, {
-        content,
-        reextract: true,
-        replaceFacts: true,
-      });
+      const updated = await updateEntry(updatedEntryId, { content, reextract: true, replaceFacts: true });
       if (updated) {
         setEditingEntry(null);
         if (expandedEntryId === updatedEntryId) {
@@ -256,44 +217,61 @@ export function MemoryWeavingPage() {
   const handleSubmitCreate = async (content: string): Promise<void> => {
     setCreatingEntry(true);
     try {
-      const created = await createEntry({
-        content,
-        reextract: true,
-      });
-      if (created) {
-        setCreateDialogOpen(false);
-      } else {
-        window.alert("创建失败，请稍后重试。");
-      }
+      const created = await createEntry({ content, reextract: true });
+      if (created) { setCreateDialogOpen(false); }
+      else { window.alert("创建失败，请稍后重试。"); }
     } finally {
       setCreatingEntry(false);
     }
   };
 
+  const handleSourceFilterChange = (filter: MemoryQuickSourceFilter): void => {
+    setFilters({ sourceTypes: mapQuickFilterToSourceTypes(filter) });
+  };
+
   return (
     <section className="page-shell memory-weaving-shell">
       <div className="memory-weaving-layout">
-        <aside className="memory-weaving-sidebar">
-          <MemoryStatsPanel
-            stats={stats}
-            isLoading={statsLoadingStatus === "loading"}
-            error={statsError}
-            activeSourceFilter={quickSourceFilter}
-            onSourceFilterChange={(filter) => {
-              setFilters({ sourceTypes: mapQuickFilterToSourceTypes(filter) });
-            }}
-          />
-        </aside>
+        {/* Page title */}
+        <div className="memory-weaving-header">
+          <h2>MemoryWaving</h2>
+          {statsLoadingStatus !== "loading" && (
+            <span className="memory-total-badge">{stats.total} 条记忆</span>
+          )}
+        </div>
 
-        <div className="memory-weaving-main">
-          <div className="memory-weaving-toolbar">
-            <div>
-              <p className="memory-weaving-kicker">Phase 8 Complete</p>
-              <h2>记忆编织</h2>
-            </div>
-            <span className="memory-toolbar-hint">彩色分类标签与分类筛选已启用</span>
+        {/* Inline stats bar + quick filters */}
+        <div className="memory-stats-bar">
+          <span className="stat-chip">
+            文档 <strong>{documentCount}</strong>
+          </span>
+          <span className="stat-chip">
+            对话 <strong>{chatCount}</strong>
+          </span>
+          <span className="stat-chip">
+            手动 <strong>{manualCount}</strong>
+          </span>
+          <span className="stat-divider" />
+          <span className="stat-chip">
+            已确认 <strong>{confirmedCount}</strong>
+          </span>
+          {conflictedCount > 0 && (
+            <span className="stat-chip" style={{ borderColor: "rgba(239, 68, 68, 0.35)" }}>
+              冲突 <strong style={{ color: "#ef4444" }}>{conflictedCount}</strong>
+            </span>
+          )}
+          {statsError && <span className="stat-chip" style={{ color: "#9a4d00" }}>统计加载失败</span>}
+
+          <div className="memory-quick-filters-inline">
+            <button type="button" className={quickSourceFilter === "all" ? "is-active" : ""} onClick={() => handleSourceFilterChange("all")}>全部</button>
+            <button type="button" className={quickSourceFilter === "document" ? "is-active" : ""} onClick={() => handleSourceFilterChange("document")}>文档</button>
+            <button type="button" className={quickSourceFilter === "chat" ? "is-active" : ""} onClick={() => handleSourceFilterChange("chat")}>对话</button>
+            <button type="button" className={quickSourceFilter === "manual" ? "is-active" : ""} onClick={() => handleSourceFilterChange("manual")}>手动</button>
           </div>
+        </div>
 
+        {/* Main content */}
+        <div className="memory-weaving-main">
           <MemoryToolbar
             searchQuery={searchQuery}
             filters={filters}
@@ -314,9 +292,7 @@ export function MemoryWeavingPage() {
           {entriesError ? (
             <div className="memory-weaving-error">
               <p>{entriesError}</p>
-              <button type="button" onClick={handleRetry}>
-                重试
-              </button>
+              <button type="button" onClick={handleRetry}>重试</button>
             </div>
           ) : entriesLoadingStatus === "loading" && entries.length === 0 ? (
             <MemoryTableSkeleton />
@@ -345,12 +321,8 @@ export function MemoryWeavingPage() {
             currentPage={currentPage}
             pageSize={pageSize}
             totalItems={totalCount}
-            onPageChange={(page) => {
-              setCurrentPage(page);
-            }}
-            onPageSizeChange={(size) => {
-              setPageSize(size);
-            }}
+            onPageChange={(page) => setCurrentPage(page)}
+            onPageSizeChange={(size) => setPageSize(size)}
           />
         </div>
       </div>
@@ -358,11 +330,7 @@ export function MemoryWeavingPage() {
       <CreateMemoryDialog
         open={createDialogOpen}
         isSubmitting={creatingEntry}
-        onClose={() => {
-          if (!creatingEntry) {
-            setCreateDialogOpen(false);
-          }
-        }}
+        onClose={() => { if (!creatingEntry) setCreateDialogOpen(false); }}
         onSubmit={handleSubmitCreate}
       />
 
@@ -370,11 +338,7 @@ export function MemoryWeavingPage() {
         open={editingEntry !== null}
         entry={editingEntry}
         isSubmitting={updatingEntry}
-        onClose={() => {
-          if (!updatingEntry) {
-            setEditingEntry(null);
-          }
-        }}
+        onClose={() => { if (!updatingEntry) setEditingEntry(null); }}
         onSubmit={handleSubmitEdit}
       />
     </section>

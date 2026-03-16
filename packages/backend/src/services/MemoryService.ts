@@ -71,8 +71,8 @@ export class MemoryService implements MemoryServiceLike {
           id: factId,
           subjectNodeId: candidate.subjectNodeId,
           predicate: candidate.predicate,
-          objectNodeId: candidate.objectNodeId,
-          objectText: candidate.objectText,
+          ...(candidate.objectNodeId !== undefined ? { objectNodeId: candidate.objectNodeId } : {}),
+          ...(candidate.objectText !== undefined ? { objectText: candidate.objectText } : {}),
           valueType: candidate.valueType,
           normalizedKey,
           confidence: candidate.confidence,
@@ -122,9 +122,10 @@ export class MemoryService implements MemoryServiceLike {
       resolve: "confirmed", // 解决冲突 = 确认当前值
     };
 
+    const reviewNote = note ?? fact.reviewNote;
     return this.store.updateFact(factId, {
       reviewStatus: statusMap[action],
-      reviewNote: note ?? fact.reviewNote,
+      ...(reviewNote !== undefined ? { reviewNote } : {}),
     });
   }
 

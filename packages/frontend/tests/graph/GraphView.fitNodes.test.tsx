@@ -116,6 +116,7 @@ vi.mock("../../src/hooks/useGraphData", () => ({
     reagraph: { nodes: mockReagraphNodes, edges: mockReagraphEdges },
     isLoading: false,
     error: null,
+    loadGraphData: vi.fn().mockResolvedValue(undefined),
     loadInitialGraphData: vi.fn().mockResolvedValue(undefined),
     expandNode: vi.fn().mockResolvedValue(undefined),
   }),

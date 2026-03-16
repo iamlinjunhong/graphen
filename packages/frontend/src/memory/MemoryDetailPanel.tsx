@@ -47,6 +47,8 @@ const STATE_LABELS: Record<MemoryEntry["state"], string> = {
   deleted: "已删除",
 };
 
+const objectFirstPredicatePattern = /(姓名|名字|名叫|叫|全名|昵称|称呼)/;
+
 function formatDateTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -63,9 +65,47 @@ function resolveSubjectText(fact: MemoryEntryFact): string {
   return fact.subjectText?.trim() || fact.subjectNodeId?.trim() || "—";
 }
 
+function normalizeForGraphKey(input: string): string {
+  return input.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function resolveSubjectFocusNodeId(fact: MemoryEntryFact): string | null {
+  const fromNodeId = fact.subjectNodeId?.trim();
+  if (fromNodeId) {
+    return fromNodeId;
+  }
+
+  const subjectText = fact.subjectText?.trim();
+  if (!subjectText) {
+    return null;
+  }
+  return `text:${normalizeForGraphKey(subjectText)}`;
+}
+
+function resolveObjectFocusNodeId(fact: MemoryEntryFact): string | null {
+  const fromNodeId = fact.objectNodeId?.trim();
+  if (fromNodeId) {
+    return fromNodeId;
+  }
+
+  const objectText = fact.objectText?.trim();
+  if (!objectText) {
+    return null;
+  }
+  return `value:${fact.entryId}:${fact.normalizedFactKey}`;
+}
+
 function buildGraphHref(fact: MemoryEntryFact): string {
-  if (fact.subjectNodeId) {
-    return `/graph?focusNode=${encodeURIComponent(fact.subjectNodeId)}`;
+  const subjectNodeId = resolveSubjectFocusNodeId(fact);
+  const objectNodeId = resolveObjectFocusNodeId(fact);
+  const predicate = fact.predicate.trim();
+  const prefersObject = objectFirstPredicatePattern.test(predicate);
+  const focusNodeId = prefersObject
+    ? (objectNodeId ?? subjectNodeId)
+    : (subjectNodeId ?? objectNodeId);
+
+  if (focusNodeId) {
+    return `/graph?focusNode=${encodeURIComponent(focusNodeId)}`;
   }
   return "/graph";
 }

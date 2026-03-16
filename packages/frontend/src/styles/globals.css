@@ -2732,6 +2732,33 @@ button.doc-item {
   50%, 100% { opacity: 0; }
 }
 
+/* Thinking indicator */
+.chat-thinking-indicator {
+  display: inline-flex;
+  align-items: center;
+}
+
+.chat-thinking-text {
+  font-size: 0.9rem;
+  font-weight: 500;
+  background: linear-gradient(
+    90deg,
+    var(--bg-surface),
+    var(--accent-primary),
+    var(--bg-surface)
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: chatThinkingShimmer 2s ease-in-out infinite;
+}
+
+@keyframes chatThinkingShimmer {
+  0%   { background-position: 100% 50%; }
+  100% { background-position: -100% 50%; }
+}
+
 @keyframes pulseBorder {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.6; }

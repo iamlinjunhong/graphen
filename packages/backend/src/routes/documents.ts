@@ -102,6 +102,7 @@ function phaseToDocumentStatus(phase: PipelinePhase): DocumentStatus {
       return "extracting";
     case "embedding":
     case "saving":
+    case "memory":
       return "embedding";
     case "completed":
       return "completed";
@@ -507,7 +508,7 @@ export function createDocumentsRouter(options: CreateDocumentsRouterOptions = {}
 
       await documentStore.deleteDocumentAndRelated(documentId);
       // Clean up graph nodes/edges sourced by this document
-      if (typeof (graphStore as Record<string, unknown>).removeDocumentData === "function") {
+      if (typeof (graphStore as unknown as Record<string, unknown>).removeDocumentData === "function") {
         try {
           await (graphStore as unknown as { removeDocumentData(docId: string): Promise<void> }).removeDocumentData(documentId);
         } catch (error) {

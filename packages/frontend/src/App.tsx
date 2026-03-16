@@ -36,8 +36,8 @@ function MemoryRouteFallback() {
   return (
     <section className="page-shell">
       <header className="page-header">
-        <p className="page-kicker">记忆编织</p>
-        <h2 className="page-title">Loading Memory Weaving...</h2>
+        <p className="page-kicker">MemoryWaving</p>
+        <h2 className="page-title">Loading MemoryWaving...</h2>
       </header>
       <div className="panel content-panel">
         <p className="muted">Loading memory page components.</p>

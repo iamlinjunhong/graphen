@@ -271,41 +271,45 @@ export class ChatService {
     const routingSignals = this.buildRoutingSignals(analysis);
 
     if (analysis.must_use_memory && context.memoryHitCount === 0) {
-      const fallbackAnswer = context.filteredOutMemoryCount > 0
-        ? "我没有相关记忆可用于回答这个问题。我检索到的内容不属于可用身份信息（可能是低质量或无关记忆），你可以在记忆管理中修正后再问我。"
-        : "我没有相关记忆可用于回答这个问题。你可以先告诉我你的相关信息。";
-      yield {
-        type: "delta",
-        delta: fallbackAnswer
-      };
-      const fallbackMessage = await this.chatStore.addMessage({
-        sessionId: input.sessionId,
-        role: "assistant",
-        content: fallbackAnswer,
-        metadata: {
-          prompt_versions: promptVersions,
-          routing_signals: routingSignals,
-          retrieval_plan: context.retrievalPlan,
-          short_query_mode: context.shortQueryMode,
-          conflict_detected: context.conflictDetected
-        },
-        sources: context.sources,
-        graphContext: context.graphContext,
-        sourcePaths: context.sourcePaths,
-        inferredRelations: context.inferredRelations
-      });
-      yield {
-        type: "sources",
-        sources: context.sources,
-        graphContext: context.graphContext,
-        sourcePaths: context.sourcePaths,
-        inferredRelations: context.inferredRelations
-      };
-      yield {
-        type: "done",
-        message: fallbackMessage
-      };
-      return;
+      // If graph context has relevant data, don't block — let the LLM answer from graph
+      const hasGraphContext = context.contextSections.graph_facts.length > 0;
+      if (!hasGraphContext) {
+        const fallbackAnswer = context.filteredOutMemoryCount > 0
+          ? "我没有相关记忆可用于回答这个问题。我检索到的内容不属于可用身份信息（可能是低质量或无关记忆），你可以在记忆管理中修正后再问我。"
+          : "我没有相关记忆可用于回答这个问题。你可以先告诉我你的相关信息。";
+        yield {
+          type: "delta",
+          delta: fallbackAnswer
+        };
+        const fallbackMessage = await this.chatStore.addMessage({
+          sessionId: input.sessionId,
+          role: "assistant",
+          content: fallbackAnswer,
+          metadata: {
+            prompt_versions: promptVersions,
+            routing_signals: routingSignals,
+            retrieval_plan: context.retrievalPlan,
+            short_query_mode: context.shortQueryMode,
+            conflict_detected: context.conflictDetected
+          },
+          sources: context.sources,
+          graphContext: context.graphContext,
+          sourcePaths: context.sourcePaths,
+          inferredRelations: context.inferredRelations
+        });
+        yield {
+          type: "sources",
+          sources: context.sources,
+          graphContext: context.graphContext,
+          sourcePaths: context.sourcePaths,
+          inferredRelations: context.inferredRelations
+        };
+        yield {
+          type: "done",
+          message: fallbackMessage
+        };
+        return;
+      }
     }
 
     let answer = "";
@@ -496,7 +500,7 @@ export class ChatService {
               }
             });
             const directEntries: ContextEntry[] = directResult.entries
-              .filter((e) => e.reviewStatus !== "rejected")
+              .filter((e) => e.reviewStatus !== "rejected" && e.reviewStatus !== "conflicted")
               .filter((e) => {
                 const content = e.content.replace(/^\[CONFLICTED\]\s*/i, "").trim();
                 return isIdentitySlotEntry(content) && !isLowQualityIdentityEntry(content);
@@ -594,7 +598,15 @@ export class ChatService {
       2,
       24
     );
-    const graphDepth = clampInt(Math.round(1 + graphWeight * 3), 1, 4);
+    const graphDepth = clampInt(
+      Math.max(
+        Math.round(1 + graphWeight * 3),
+        analysis.retrieval_strategy.graph_depth ?? 1,
+        2  // Minimum depth of 2 to support basic multi-hop reasoning
+      ),
+      2,
+      4
+    );
     const useGraph = analysis.retrieval_strategy.use_graph && graphWeight > 0.05;
     const useVector = analysis.retrieval_strategy.use_vector && docWeight > 0.05;
 
@@ -648,7 +660,14 @@ export class ChatService {
 
     const memoryPrimaryCount = clampInt(Math.round(memoryPrimaryTokens / 110), 1, 12);
     const memorySecondaryCount = clampInt(Math.round(memorySecondaryTokens / 130), 1, 10);
-    const graphFactCount = clampInt(Math.round(graphFactTokens / 160), 1, 12);
+    // For graph-heavy queries (relationship traversal, aggregation), ensure enough budget
+    // to include both entity descriptions and relationship edges
+    const graphNeedAggregation = analysis.retrieval_strategy.need_aggregation === true;
+    const graphFactBase = Math.round(graphFactTokens / 160);
+    const graphFactBoost = (analysis.retrieval_weights.graph_facts >= 0.7 || graphNeedAggregation)
+      ? Math.max(graphFactBase, 8)
+      : graphFactBase;
+    const graphFactCount = clampInt(graphFactBoost, 2, 20);
     const docChunkCount = shortQueryMode
       ? 1
       : clampInt(Math.round(docChunkTokens / 180), 1, 10);
@@ -695,15 +714,65 @@ export class ChatService {
   }
 
   private buildGraphFacts(graphContextText: string, budget: number): string[] {
-    if (graphContextText.includes("（无图谱上下文）")) {
-      return [];
+      if (graphContextText.includes("（无图谱上下文）")) {
+        return [];
+      }
+      const allLines = graphContextText
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith("- "));
+
+      // Categorize lines into three tiers:
+      // 1. Path lines (from "推理路径" section) — highest priority for multi-hop reasoning
+      // 2. Relationship lines (contain "--[") — important for graph structure
+      // 3. Entity description lines — supplementary context
+      //
+      // We detect path lines by checking if they contain multiple "--[" (multi-hop)
+      // or appear after the "推理路径" header in the original text.
+      const pathSectionStart = graphContextText.indexOf("推理路径：");
+      const inferredSectionStart = graphContextText.indexOf("推断关系");
+      const pathLines: string[] = [];
+      const relationLines: string[] = [];
+      const entityLines: string[] = [];
+
+      for (const line of allLines) {
+        const linePos = graphContextText.indexOf(line);
+        const isInPathSection = pathSectionStart >= 0 && linePos > pathSectionStart
+          && (inferredSectionStart < 0 || linePos < inferredSectionStart);
+        const isInInferredSection = inferredSectionStart >= 0 && linePos > inferredSectionStart;
+
+        if (isInPathSection || isInInferredSection) {
+          pathLines.push(line);
+        } else if (line.includes("--[")) {
+          relationLines.push(line);
+        } else {
+          entityLines.push(line);
+        }
+      }
+
+      // Budget allocation: paths first, then relationships, then entities
+      const result: string[] = [];
+      let remaining = budget;
+
+      // Tier 1: reasoning paths (most valuable for multi-hop queries)
+      const pathSlice = pathLines.slice(0, remaining);
+      result.push(...pathSlice);
+      remaining -= pathSlice.length;
+
+      // Tier 2: relationship edges
+      if (remaining > 0) {
+        const relSlice = relationLines.slice(0, remaining);
+        result.push(...relSlice);
+        remaining -= relSlice.length;
+      }
+
+      // Tier 3: entity descriptions
+      if (remaining > 0) {
+        result.push(...entityLines.slice(0, remaining));
+      }
+
+      return result;
     }
-    return graphContextText
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.startsWith("- "))
-      .slice(0, budget);
-  }
 
   private buildDocChunks(chunks: ChunkSearchResult[], budget: number): ChunkSearchResult[] {
     if (chunks.length === 0 || budget <= 0) {
@@ -873,11 +942,27 @@ export class ChatService {
         const graphWeight = analysis.retrieval_weights.graph_facts;
         const maxNodes = Math.max(30, Math.floor(this.options.maxGraphContextNodes * (1 + graphWeight * 2)));
         const maxEdges = Math.max(40, Math.floor(this.options.maxGraphContextEdges * (1 + graphWeight * 2)));
+
+        logger.info(
+          { centerNodeIds, maxDepth, maxNodes, maxEdges, graphWeight, graphDepth: retrievalPlan.graphDepth },
+          "Graph retrieval params"
+        );
+
         const subgraph = await this.graphStore.getSubgraph({
           centerNodeIds,
           maxDepth,
           maxNodes
         });
+
+        logger.info(
+          {
+            subgraphNodeCount: subgraph.nodes.length,
+            subgraphEdgeCount: subgraph.edges.length,
+            subgraphNodeNames: subgraph.nodes.map((n) => n.name).slice(0, 20),
+            subgraphEdgeTypes: subgraph.edges.map((e) => `${e.sourceNodeId.slice(0, 8)}→${e.targetNodeId.slice(0, 8)}(${e.relationType})`).slice(0, 20)
+          },
+          "Graph subgraph retrieved"
+        );
 
         const nodes = subgraph.nodes.slice(0, this.options.maxGraphContextNodes);
         const allowedNodeIds = new Set(nodes.map((node) => node.id));
@@ -894,27 +979,53 @@ export class ChatService {
       }
 
   private async collectCenterNodeIds(
-    question: string,
-    analysis: QueryAnalysisV2
-  ): Promise<string[]> {
-    const candidates = dedupeStrings([
-      ...analysis.key_entities,
-      analysis.rewritten_query,
-      question
-    ]);
-    const hits: SearchResult[] = [];
+      question: string,
+      analysis: QueryAnalysisV2
+    ): Promise<string[]> {
+      const keyEntities = analysis.key_entities.filter((e) => e.trim().length > 0);
+      // Search key_entities first (highest precision), then rewritten_query and
+      // original question as fallback.  Dedupe so we don't search the same text
+      // twice.
+      const primaryCandidates = dedupeStrings(keyEntities);
+      const secondaryCandidates = dedupeStrings([
+        analysis.rewritten_query,
+        question
+      ]).filter((c) => !primaryCandidates.includes(c));
 
-    for (const candidate of candidates.slice(0, 6)) {
-      const searchResults = await this.graphStore.searchNodes(
-        candidate,
-        this.options.entitySearchLimit
-      );
-      hits.push(...searchResults);
+      const primaryHits: SearchResult[] = [];
+      const secondaryHits: SearchResult[] = [];
+
+      for (const candidate of primaryCandidates.slice(0, 4)) {
+        const results = await this.graphStore.searchNodes(
+          candidate,
+          this.options.entitySearchLimit
+        );
+        primaryHits.push(...results);
+      }
+
+      // Only search secondary candidates if primary didn't find enough nodes
+      if (primaryHits.length < 2) {
+        for (const candidate of secondaryCandidates.slice(0, 3)) {
+          const results = await this.graphStore.searchNodes(
+            candidate,
+            this.options.entitySearchLimit
+          );
+          secondaryHits.push(...results);
+        }
+      }
+
+      // Primary hits get priority; apply a minimum score threshold to secondary
+      // hits to avoid pulling in unrelated nodes from broad query strings.
+      const MIN_SECONDARY_SCORE = 1.0;
+      const filteredSecondary = secondaryHits.filter((h) => h.score >= MIN_SECONDARY_SCORE);
+
+      const combined = [...primaryHits, ...filteredSecondary]
+        .sort((a, b) => b.score - a.score);
+
+      // Limit center nodes to avoid BFS explosion from noisy seeds
+      const maxCenterNodes = keyEntities.length <= 2 ? 4 : 6;
+      return dedupeStrings(combined.map((item) => item.node.id)).slice(0, maxCenterNodes);
     }
-
-    const sorted = hits.sort((a, b) => b.score - a.score);
-    return dedupeStrings(sorted.map((item) => item.node.id)).slice(0, 8);
-  }
 
   private async retrieveVectorContext(
     question: string,
@@ -1295,6 +1406,13 @@ function isIdentitySlotEntry(content: string): boolean {
   if (/用户(?:是|叫|名叫|来自)/.test(compact)) {
     return true;
   }
+  // Match first-person identity patterns from manual entries
+  if (/我(?:是|叫|名叫|来自)/.test(compact)) {
+    return true;
+  }
+  if (/我(?:的)?(?:姓名|名字|身份|职业|职位|工作|来源地|家乡|籍贯|居住地)/.test(compact)) {
+    return true;
+  }
   return false;
 }
 
@@ -1369,12 +1487,47 @@ function resolveConflictWinner(
 
 function parseMemoryContent(content: string): { subject: string; predicate: string; object: string } | null {
   const normalized = content.replace(/\[CONFLICTED\]\s*/g, "").replace(/\s+/g, "");
+  // Match "用户(的)X是Y" pattern
   let match = normalized.match(/用户(?:的)?(.{1,12})是([^，。；;]+)/);
   if (match) {
     return {
       subject: "用户",
       predicate: match[1] ?? "",
       object: match[2] ?? ""
+    };
+  }
+  // Match first-person "我叫/我是/我的X是" patterns (manual entries often use first-person)
+  match = normalized.match(/我(?:叫|名叫)([^，。；;]+)/);
+  if (match) {
+    return {
+      subject: "用户",
+      predicate: "姓名",
+      object: match[1] ?? ""
+    };
+  }
+  match = normalized.match(/我(?:的)?(?:名字|姓名)(?:是|叫)([^，。；;]+)/);
+  if (match) {
+    return {
+      subject: "用户",
+      predicate: "姓名",
+      object: match[1] ?? ""
+    };
+  }
+  match = normalized.match(/我是(?:一[名个位])?([^，。；;]+)/);
+  if (match) {
+    return {
+      subject: "用户",
+      predicate: "身份",
+      object: match[1] ?? ""
+    };
+  }
+  // Match "用户叫/名叫X" pattern
+  match = normalized.match(/用户(?:叫|名叫)([^，。；;]+)/);
+  if (match) {
+    return {
+      subject: "用户",
+      predicate: "姓名",
+      object: match[1] ?? ""
     };
   }
   match = normalized.match(/用户喜欢([^，。；;]+)/);
@@ -1386,6 +1539,23 @@ function parseMemoryContent(content: string): { subject: string; predicate: stri
     };
   }
   match = normalized.match(/用户不喜欢([^，。；;]+)/);
+  if (match) {
+    return {
+      subject: "用户",
+      predicate: "不喜欢",
+      object: match[1] ?? ""
+    };
+  }
+  // Match first-person preference patterns
+  match = normalized.match(/我喜欢([^，。；;]+)/);
+  if (match) {
+    return {
+      subject: "用户",
+      predicate: "喜欢",
+      object: match[1] ?? ""
+    };
+  }
+  match = normalized.match(/我不喜欢([^，。；;]+)/);
   if (match) {
     return {
       subject: "用户",
@@ -1438,12 +1608,19 @@ function buildTopPaths(
   maxPaths = 10
 ): SourcePath[] {
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  // Build bidirectional adjacency — graph edges are directed but we need
+  // to traverse in both directions for multi-hop path discovery.
   const adjacency = new Map<string, { targetId: string; relationType: string }[]>();
 
+  const addAdj = (fromId: string, toId: string, relationType: string): void => {
+    const list = adjacency.get(fromId) ?? [];
+    list.push({ targetId: toId, relationType });
+    adjacency.set(fromId, list);
+  };
+
   for (const edge of edges) {
-    const list = adjacency.get(edge.sourceNodeId) ?? [];
-    list.push({ targetId: edge.targetNodeId, relationType: edge.relationType });
-    adjacency.set(edge.sourceNodeId, list);
+    addAdj(edge.sourceNodeId, edge.targetNodeId, edge.relationType);
+    addAdj(edge.targetNodeId, edge.sourceNodeId, edge.relationType);
   }
 
   const paths: SourcePath[] = [];

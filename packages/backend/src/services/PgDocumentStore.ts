@@ -172,6 +172,66 @@ export class PgDocumentStore implements PgDocumentStoreLike {
 
   async deleteDocumentAndRelated(docId: string): Promise<void> {
     await this.ensureSchema();
+
+    // 清理由该文档产生的 memory entries / facts / evidence
+    // 精细清理：只删除该文档独占的数据，保留其他来源共享的数据
+    try {
+      // 1. 找出该文档关联的所有 entry ids
+      const evidenceResult = await this.pool.query<{ entry_id: string }>(
+        `SELECT DISTINCT entry_id FROM memory_evidence WHERE document_id = $1`,
+        [docId]
+      );
+      const entryIds = evidenceResult.rows.map((r) => r.entry_id);
+
+      if (entryIds.length > 0) {
+        // 2. 删除该文档的 evidence 记录
+        await this.pool.query(
+          `DELETE FROM memory_evidence WHERE document_id = $1`,
+          [docId]
+        );
+
+        // 3. 软删除不再有任何 evidence 的 facts
+        await this.pool.query(
+          `
+            UPDATE memory_facts
+            SET fact_state = 'deleted',
+                deleted_at = NOW(),
+                neo4j_synced = FALSE,
+                updated_at = NOW()
+            WHERE entry_id = ANY($1::uuid[])
+              AND deleted_at IS NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM memory_evidence ev
+                WHERE ev.fact_id = memory_facts.id
+              )
+          `,
+          [entryIds]
+        );
+
+        // 4. 删除不再有任何 active facts 的 entries
+        await this.pool.query(
+          `
+            DELETE FROM memory_entries
+            WHERE id = ANY($1::uuid[])
+              AND NOT EXISTS (
+                SELECT 1 FROM memory_facts f
+                WHERE f.entry_id = memory_entries.id
+                  AND f.deleted_at IS NULL
+                  AND f.fact_state = 'active'
+              )
+          `,
+          [entryIds]
+        );
+      }
+    } catch (error) {
+      // memory 表可能尚未创建（如未启用 memory 功能），忽略
+      const pgErr = error as { code?: string };
+      if (pgErr.code !== "42P01") {
+        throw error;
+      }
+    }
+
+    // 删除文档本身（document_chunks 通过 ON DELETE CASCADE 自动清理）
     await this.pool.query(
       `
         DELETE FROM documents
@@ -187,9 +247,20 @@ export class PgDocumentStore implements PgDocumentStoreLike {
     }
     await this.ensureSchema();
 
+    // 收集涉及的 document_id，先删除旧 chunks 再插入，避免 reparse 时唯一约束冲突
+    const documentIds = [...new Set(chunks.map((c) => c.documentId))];
+
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+
+      if (documentIds.length > 0) {
+        await client.query(
+          `DELETE FROM document_chunks WHERE document_id = ANY($1::uuid[])`,
+          [documentIds]
+        );
+      }
+
       for (const chunk of chunks) {
         await client.query(
           `

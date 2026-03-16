@@ -3,6 +3,7 @@ import type { Document, DocumentStatus } from "@graphen/shared";
 import { useSSE } from "../hooks/useSSE";
 import { apiClient } from "../services/api";
 import { useDocumentStore } from "../stores/useDocumentStore";
+import { useMemoryStore } from "../stores/useMemoryStore";
 import type { EditorDraft, UploadQueueItem } from "../stores/useDocumentStore";
 import { processUploadQueue } from "../utils/uploadQueue";
 import type { UploadSingleResult } from "../utils/uploadQueue";
@@ -480,6 +481,12 @@ export function DocumentView() {
 
     if (payload.status === "completed" || payload.status === "error") {
       void refreshDocuments();
+      // Refresh memory entries so newly extracted memories appear immediately
+      if (payload.status === "completed") {
+        const memoryStore = useMemoryStore.getState();
+        void memoryStore.fetchEntries({ force: true });
+        void memoryStore.fetchStats({ force: true });
+      }
     }
   }, [refreshDocuments, upsertDocument]);
 

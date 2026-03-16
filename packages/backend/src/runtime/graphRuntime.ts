@@ -66,9 +66,11 @@ export function getDocumentPipelineSingleton(): DocumentPipeline {
     const pipelineDeps: {
       documentStore: PgDocumentStoreLike;
       memoryExtractor: MemoryExtractor;
+      pgPool: ReturnType<typeof getPgPoolSingleton>;
     } = {
       documentStore: getPgDocumentStoreSingleton(),
-      memoryExtractor: getMemoryExtractorSingleton()
+      memoryExtractor: getMemoryExtractorSingleton(),
+      pgPool: getPgPoolSingleton()
     };
 
     documentPipelineSingleton = new DocumentPipeline(
@@ -109,3 +111,18 @@ export async function disconnectGraphStoreSingleton(): Promise<void> {
   connectPromise = null;
   await store.disconnect();
 }
+/**
+ * 获取 Neo4j 同步目标（如果图谱同步已启用且已连接）。
+ * 返回 null 表示不可用，调用方应跳过 Neo4j 内联同步。
+ */
+export function getNeo4jSyncTarget(): Neo4jGraphStore | null {
+  if (!graphStoreSingleton || !(graphStoreSingleton instanceof Neo4jGraphStore)) {
+    return null;
+  }
+  if (!connectPromise) {
+    return null;
+  }
+  return graphStoreSingleton;
+}
+
+

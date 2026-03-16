@@ -19,6 +19,9 @@ import {
 import { buildMemoryEvidenceHash } from "../utils/memoryEvidence.js";
 import { logger } from "../utils/logger.js";
 import { recordMemoryOperationalMetric } from "../utils/memoryOperationalMetrics.js";
+import { getNeo4jSyncTarget } from "../runtime/graphRuntime.js";
+import { graphSyncEnabled } from "../runtime/runtimeMode.js";
+import { syncFactsToNeo4jInline } from "../utils/syncFactsToNeo4j.js";
 
 /** Raw fact from LLM JSON output */
 interface RawExtractedFact {
@@ -70,11 +73,14 @@ export interface MemoryExtractorOptions {
   minConfidence?: number;
   /** Confidence multiplier for assistant messages (default: 0.3) */
   assistantConfidenceMultiplier?: number;
+  /** Maximum number of concurrent extraction tasks (default: 3) */
+  maxConcurrency?: number;
 }
 
 export class MemoryExtractor {
   private readonly queue: ExtractionTask[] = [];
-  private processing = false;
+  private activeCount = 0;
+  private readonly maxConcurrency: number;
   private readonly minConfidence: number;
   private readonly assistantConfidenceMultiplier: number;
   private readonly entryStore: MemoryEntryStoreLike | undefined;
@@ -88,6 +94,7 @@ export class MemoryExtractor {
   ) {
     this.minConfidence = options.minConfidence ?? 0.5;
     this.assistantConfidenceMultiplier = options.assistantConfidenceMultiplier ?? 0.3;
+    this.maxConcurrency = options.maxConcurrency ?? 3;
     this.entryStore = deps?.entryStore;
     this.pgPool = deps?.pgPool;
   }
@@ -119,40 +126,38 @@ export class MemoryExtractor {
 
   /** Whether the extractor is currently processing a task */
   get isProcessing(): boolean {
-    return this.processing;
+    return this.activeCount > 0;
   }
 
   // --- Internal processing ---
 
   private scheduleProcessing(): void {
-    if (this.processing) return;
-    // Use setImmediate-style scheduling to not block the event loop
-    Promise.resolve().then(() => this.processNext());
-  }
-
-  private async processNext(): Promise<void> {
-    if (this.processing || this.queue.length === 0) return;
-
-    this.processing = true;
-    const task = this.queue.shift()!;
-
-    try {
-      const result = await this.processTask(task);
-      task.resolve(result);
-      await this.recordDocumentExtractionMetric(task.sourceType, "success");
-    } catch (error) {
-      logger.error({ err: error }, "MemoryExtractor: extraction failed");
-      await this.recordDocumentExtractionMetric(task.sourceType, "failure");
-      task.reject(error instanceof Error ? error : new Error(String(error)));
-    } finally {
-      this.processing = false;
-      if (this.queue.length > 0) {
-        this.scheduleProcessing();
-      }
+    // Launch as many concurrent workers as allowed
+    while (this.activeCount < this.maxConcurrency && this.queue.length > 0) {
+      this.activeCount++;
+      const task = this.queue.shift()!;
+      // Fire-and-forget; each worker manages its own lifecycle
+      this.runWorker(task);
     }
   }
 
-  private async processTask(task: ExtractionTask): Promise<MergeResult> {
+  private runWorker(task: ExtractionTask): void {
+    this.processTask(task)
+      .then((result) => {
+        task.resolve(result);
+        return this.recordDocumentExtractionMetric(task.sourceType, "success");
+      })
+      .catch((error) => {
+        logger.error({ err: error }, "MemoryExtractor: extraction failed");
+        this.recordDocumentExtractionMetric(task.sourceType, "failure").catch(() => {});
+        task.reject(error instanceof Error ? error : new Error(String(error)));
+      })
+      .finally(() => {
+        this.activeCount--;
+        // Try to pick up more work
+        this.scheduleProcessing();
+      });
+  }  private async processTask(task: ExtractionTask): Promise<MergeResult> {
     const extraction = await this.extractFacts(task.message);
     if (!extraction.should_store) {
       logger.info(
@@ -207,7 +212,23 @@ export class MemoryExtractor {
         : task.message;
       const entry = await this.memoryService.createEntry(entryContent, metadata);
       const upserted = await this.entryStore.upsertFacts(entry.id, facts);
-      await this.persistEvidence(task, upserted.facts);
+
+      // PG evidence 持久化与 Neo4j 内联同步并行执行
+      const evidencePromise = this.persistEvidence(task, upserted.facts);
+
+      const neo4jPromise = (async () => {
+        if (!graphSyncEnabled()) return;
+        const neo4jTarget = getNeo4jSyncTarget();
+        if (!neo4jTarget) return;
+        try {
+          await syncFactsToNeo4jInline(neo4jTarget, upserted.facts, this.pgPool, task.documentId);
+        } catch (err) {
+          logger.warn({ err }, "MemoryExtractor: inline Neo4j sync failed (GraphSyncWorker will retry)");
+        }
+      })();
+
+      await Promise.all([evidencePromise, neo4jPromise]);
+
       return {
         created: upserted.created,
         updated: upserted.updated,

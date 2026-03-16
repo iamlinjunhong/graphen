@@ -32,7 +32,7 @@ const envSchema = z.object({
   CORS_ORIGIN: z.string().default("http://localhost:5173"),
   MAX_UPLOAD_SIZE: z.coerce.number().int().positive().default(50 * 1024 * 1024),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
-  RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
+  RATE_LIMIT_MAX: z.coerce.number().int().positive().default(300),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
   GRAPH_SYNC_ENABLED: booleanEnv(true),
   RUNTIME_PG_REQUIRED: booleanEnv(true),

@@ -475,7 +475,7 @@ export class SqliteAndNeo4jSource implements LegacyMigrationSource {
 
     return this.neo4jDriver.session({
       defaultAccessMode: neo4j.session.READ,
-      database: this.neo4jDatabase
+      ...(this.neo4jDatabase ? { database: this.neo4jDatabase } : {})
     });
   }
 }
@@ -1743,12 +1743,12 @@ function parseCliFlags(argv: string[]): CliFlags {
       continue;
     }
     if (token === "--chat-db" && argv[index + 1]) {
-      flags.chatDbPath = argv[index + 1];
+      flags.chatDbPath = argv[index + 1] as string;
       index += 1;
       continue;
     }
     if (token === "--memory-db" && argv[index + 1]) {
-      flags.memoryDbPath = argv[index + 1];
+      flags.memoryDbPath = argv[index + 1] as string;
       index += 1;
       continue;
     }
@@ -1784,8 +1784,8 @@ function parseCliFlags(argv: string[]): CliFlags {
 async function main(): Promise<void> {
   const flags = parseCliFlags(process.argv.slice(2));
   const source = new SqliteAndNeo4jSource({
-    chatDbPath: flags.chatDbPath,
-    memoryDbPath: flags.memoryDbPath,
+    ...(flags.chatDbPath !== undefined ? { chatDbPath: flags.chatDbPath } : {}),
+    ...(flags.memoryDbPath !== undefined ? { memoryDbPath: flags.memoryDbPath } : {}),
     includeChat: !flags.skipChat,
     includeMemory: !flags.skipMemory,
     includeNeo4j: !flags.skipNeo4j,

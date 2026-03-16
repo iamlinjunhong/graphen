@@ -546,7 +546,7 @@ export class PgMemoryStore implements MemoryEntryStoreLike {
           FROM memory_entries
           WHERE embedding IS NOT NULL
             AND state = 'active'
-            AND review_status <> 'rejected'
+            AND review_status NOT IN ('rejected', 'conflicted')
             AND deleted_at IS NULL
           ORDER BY embedding <=> $1::vector
           LIMIT $2

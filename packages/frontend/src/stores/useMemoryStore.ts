@@ -215,7 +215,7 @@ const initialState = {
   entriesLoadingStatus: "idle" as MemoryLoadingStatus,
   entriesError: null as string | null,
   currentPage: 1,
-  pageSize: 10,
+  pageSize: 20,
   totalCount: 0,
   totalPages: 1,
   searchQuery: "",
